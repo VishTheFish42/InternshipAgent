@@ -1,0 +1,12 @@
+# companies.example.yaml — template for your company watchlist
+#
+# Copy this file to companies.yaml (which is gitignored) and add your targets.
+# You only need the company name — the agent discovers the career page automatically.
+# If a company can't be found, it shows up in `python -m src.db stats` as unresolved.
+
+companies:
+  - Google
+  - Stripe
+  - OpenAI
+  - Figma
+  - Linear

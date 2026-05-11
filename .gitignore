@@ -1,0 +1,44 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+
+# Resume PDFs — never commit
+resumes/
+
+# Extracted profile — personal data, deployed via PROFILE_CACHE env var
+profile.cache.json
+
+# Company watchlist — personal targets
+config/companies.yaml
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Playwright
+playwright/.local-browsers/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
