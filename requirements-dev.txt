@@ -1,0 +1,13 @@
+-r requirements.txt
+
+# ── Type checking ─────────────────────────────────────────────────────────────
+mypy>=1.11.0
+types-PyYAML>=6.0.0         # stubs for pyyaml
+
+# ── Linting ───────────────────────────────────────────────────────────────────
+ruff>=0.6.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=8.3.0
+pytest-asyncio>=0.24.0      # async test support
+pytest-cov>=5.0.0           # coverage reports
