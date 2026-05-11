@@ -40,7 +40,12 @@ jobs:
         run: mypy src/
 
       - name: Pytest — unit tests
-        run: pytest --ignore=tests/integration
+        run: |
+          pytest --ignore=tests/integration
+          code=$?
+          # Exit code 5 = no tests collected; acceptable until Phase 5 adds real tests
+          if [ $code -eq 5 ]; then exit 0; fi
+          exit $code
         env:
           # Prevent any accidental real API calls in unit tests
           ANTHROPIC_API_KEY: "test-key"
