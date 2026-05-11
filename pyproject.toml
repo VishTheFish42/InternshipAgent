@@ -1,0 +1,73 @@
+[project]
+name = "internship-agent"
+version = "0.1.0"
+description = "Autonomous internship monitoring agent"
+requires-python = ">=3.11"
+
+# ── Ruff ──────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (ruff format handles this)
+    "B008",   # do not perform function calls in default arguments
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ── Mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+pretty = true
+
+# Third-party packages without bundled stubs
+[[tool.mypy.overrides]]
+module = [
+    "feedparser",
+    "feedparser.*",
+    "pdfplumber",
+    "pdfplumber.*",
+    "apscheduler",
+    "apscheduler.*",
+    "playwright",
+    "playwright.*",
+    "twilio",
+    "twilio.*",
+]
+ignore_missing_imports = true
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 80
