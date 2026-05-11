@@ -1,0 +1,11 @@
+# User preferences for the internship agent.
+# This file is committed — keep no personal data here.
+
+# Keywords that, if found in a job title or description, cause the posting to be skipped.
+keywords_excluded: []
+
+# Minimum Claude score (0–100) required to trigger an SMS alert.
+min_score: 70
+
+# Send a weekly digest SMS summarizing the week's matches every Sunday at 9 AM.
+weekly_digest: true
