@@ -6,11 +6,11 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ## Phase 0 — Project Bootstrap
 
-- [ ] **T-001** Initialize git repository and push to GitHub
+- [x] **T-001** Initialize git repository and push to GitHub
 - [ ] **T-002** Create Python project structure (`src/`, `src/scrapers/`, `src/scrapers/custom/`, `src/data/`, `config/`, `docs/`, `tests/`, `resumes/`)
 - [ ] **T-003** Create `requirements.txt` with all pinned dependencies (see design doc §11)
 - [ ] **T-004** Create `.env.example` with all required variable names and descriptions (no values)
-- [ ] **T-005** Add `.gitignore`: `.env`, `resumes/`, `profile.cache.json`, `config/companies.yaml`, `*.db`, `__pycache__`, `.venv`, `playwright/`
+- [x] **T-005** Add `.gitignore`: `.env`, `resumes/`, `profile.cache.json`, `config/companies.yaml`, `*.db`, `__pycache__`, `.venv`, `playwright/`
 - [ ] **T-006** Set up `pyproject.toml` with `mypy`, `pytest`, and `ruff` config
 - [ ] **T-007** Set up GitHub Actions CI: run `mypy`, `ruff`, and `pytest` on every push to main
 - [ ] **T-008** Create `profile.yaml` with default preferences (empty `keywords_excluded`, `min_score: 70`, `weekly_digest: true`)
