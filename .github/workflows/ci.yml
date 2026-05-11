@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Lint, type-check, test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff — lint
+        run: ruff check src/ tests/
+
+      - name: Ruff — format check
+        run: ruff format --check src/ tests/
+
+      - name: Mypy — type check
+        run: mypy src/
+
+      - name: Pytest — unit tests
+        run: pytest --ignore=tests/integration
+        env:
+          # Prevent any accidental real API calls in unit tests
+          ANTHROPIC_API_KEY: "test-key"
+          DATABASE_URL: "sqlite://"
