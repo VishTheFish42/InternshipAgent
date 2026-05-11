@@ -41,9 +41,11 @@ jobs:
 
       - name: Pytest — unit tests
         run: |
+          set +e
           pytest --ignore=tests/integration
           code=$?
-          # Exit code 5 = no tests collected; acceptable until Phase 5 adds real tests
+          set -e
+          # Exit code 5 = no tests collected; acceptable until real tests are added
           if [ $code -eq 5 ]; then exit 0; fi
           exit $code
         env:
