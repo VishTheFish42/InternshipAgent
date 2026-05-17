@@ -7,25 +7,25 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 ## Phase 0 — Project Bootstrap
 
 - [x] **T-001** Initialize git repository and push to GitHub
-- [ ] **T-002** Create Python project structure (`src/`, `src/scrapers/`, `src/scrapers/custom/`, `src/data/`, `config/`, `docs/`, `tests/`, `resumes/`)
-- [ ] **T-003** Create `requirements.txt` with all pinned dependencies (see design doc §11)
-- [ ] **T-004** Create `.env.example` with all required variable names and descriptions (no values)
+- [x] **T-002** Create Python project structure (`src/`, `src/scrapers/`, `src/scrapers/custom/`, `src/data/`, `config/`, `docs/`, `tests/`, `resumes/`)
+- [x] **T-003** Create `requirements.txt` with all pinned dependencies (see design doc §11)
+- [x] **T-004** Create `.env.example` with all required variable names and descriptions (no values)
 - [x] **T-005** Add `.gitignore`: `.env`, `resumes/`, `profile.cache.json`, `config/companies.yaml`, `*.db`, `__pycache__`, `.venv`, `playwright/`
-- [ ] **T-006** Set up `pyproject.toml` with `mypy`, `pytest`, and `ruff` config
-- [ ] **T-007** Set up GitHub Actions CI: run `mypy`, `ruff`, and `pytest` on every push to main
-- [ ] **T-008** Create `profile.yaml` with default preferences (empty `keywords_excluded`, `min_score: 70`, `weekly_digest: true`)
-- [ ] **T-009** Create `config/companies.example.yaml` (committed format reference); verify `config/companies.yaml` (pre-populated with ~150 companies) is in `.gitignore` and not committed
+- [x] **T-006** Set up `pyproject.toml` with `mypy`, `pytest`, and `ruff` config
+- [x] **T-007** Set up GitHub Actions CI: run `mypy`, `ruff`, and `pytest` on every push to main
+- [x] **T-008** Create `profile.yaml` with default preferences (empty `keywords_excluded`, `min_score: 70`, `weekly_digest: true`)
+- [x] **T-009** Create `config/companies.example.yaml` (committed format reference); verify `config/companies.yaml` (pre-populated with ~150 companies) is in `.gitignore` and not committed
 
 ---
 
 ## Phase 1 — Core Infrastructure
 
-- [ ] **T-101** Implement `src/config.py`: load and validate all env vars using `pydantic-settings`; raise descriptive errors on missing required vars; include `BURST_THRESHOLD` (default 5) and `PROFILE_CACHE` (base64 profile, optional — falls back to local `profile.cache.json` for local dev)
-- [ ] **T-102** Implement `src/db.py`: SQLAlchemy models for `job_postings`, `company_lookup`, `notifications`, `run_log`; `init_db()` to create schema
-- [ ] **T-103** Write Alembic migration baseline from current schema
-- [ ] **T-104** Implement `src/db.py` helpers: `upsert_posting()`, `get_unscored_postings()`, `get_unnotified_above_threshold()`, `mark_notified()`, `log_run()`, `get_unresolved_companies()`, `get_stats()`
-- [ ] **T-105** Write unit tests for all DB helpers using in-memory SQLite
-- [ ] **T-106** Implement `python -m src.db init` and `python -m src.db stats` subcommands; `stats` must show total postings, alerts sent, unresolved companies (with names), and cumulative estimated API cost
+- [x] **T-101** Implement `src/config.py`: load and validate all env vars using `pydantic-settings`; raise descriptive errors on missing required vars; include `BURST_THRESHOLD` (default 5) and `PROFILE_CACHE` (base64 profile, optional — falls back to local `profile.cache.json` for local dev)
+- [x] **T-102** Implement `src/db.py`: SQLAlchemy models for `job_postings`, `company_lookup`, `notifications`, `run_log`; `init_db()` to create schema
+- [x] **T-103** Write Alembic migration baseline from current schema
+- [x] **T-104** Implement `src/db.py` helpers: `upsert_posting()`, `get_unscored_postings()`, `get_unnotified_above_threshold()`, `mark_notified()`, `log_run()`, `get_unresolved_companies()`, `get_stats()`
+- [x] **T-105** Write unit tests for all DB helpers using in-memory SQLite
+- [x] **T-106** Implement `python -m src.db init` and `python -m src.db stats` subcommands; `stats` must show total postings, alerts sent, unresolved companies (with names), and cumulative estimated API cost
 
 ---
 
