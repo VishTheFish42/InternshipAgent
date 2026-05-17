@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Generator, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -42,21 +43,21 @@ class JobPosting(Base):
     external_id: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     company: Mapped[str] = mapped_column(String, nullable=False)
-    company_normalized: Mapped[Optional[str]] = mapped_column(String)
-    title_normalized: Mapped[Optional[str]] = mapped_column(String)
-    location: Mapped[Optional[str]] = mapped_column(String)
+    company_normalized: Mapped[str | None] = mapped_column(String)
+    title_normalized: Mapped[str | None] = mapped_column(String)
+    location: Mapped[str | None] = mapped_column(String)
     is_remote: Mapped[bool] = mapped_column(Boolean, default=False)
     url: Mapped[str] = mapped_column(String, nullable=False)
-    apply_url: Mapped[Optional[str]] = mapped_column(String)
-    apply_url_normalized: Mapped[Optional[str]] = mapped_column(String)
-    description: Mapped[Optional[str]] = mapped_column(Text)
-    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    apply_url: Mapped[str | None] = mapped_column(String)
+    apply_url_normalized: Mapped[str | None] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(Text)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime)
     found_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    match_score: Mapped[Optional[int]] = mapped_column(Integer)
-    match_reasoning: Mapped[Optional[str]] = mapped_column(Text)
-    profile_hash: Mapped[Optional[str]] = mapped_column(String)
+    match_score: Mapped[int | None] = mapped_column(Integer)
+    match_reasoning: Mapped[str | None] = mapped_column(Text)
+    profile_hash: Mapped[str | None] = mapped_column(String)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
-    notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     notifications: Mapped[list[Notification]] = relationship(
         "Notification", back_populates="job_posting"
@@ -68,14 +69,14 @@ class CompanyLookup(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name_raw: Mapped[str] = mapped_column(String, nullable=False, unique=True)
-    name_normalized: Mapped[Optional[str]] = mapped_column(String)
-    ats_type: Mapped[Optional[str]] = mapped_column(String)   # 'greenhouse' | 'lever' | 'workday' | 'custom'
-    slug: Mapped[Optional[str]] = mapped_column(String)
-    url: Mapped[Optional[str]] = mapped_column(String)
+    name_normalized: Mapped[str | None] = mapped_column(String)
+    ats_type: Mapped[str | None] = mapped_column(String)   # 'greenhouse' | 'lever' | 'workday' | 'custom'
+    slug: Mapped[str | None] = mapped_column(String)
+    url: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, nullable=False)  # 'resolved' | 'unresolved' | 'manual'
-    last_attempted: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    source: Mapped[Optional[str]] = mapped_column(String)     # 'bundled_table' | 'web_search' | 'manual'
+    last_attempted: Mapped[datetime | None] = mapped_column(DateTime)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    source: Mapped[str | None] = mapped_column(String)     # 'bundled_table' | 'web_search' | 'manual'
 
 
 class Notification(Base):
@@ -88,8 +89,8 @@ class Notification(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     phone_number: Mapped[str] = mapped_column(String, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    twilio_sid: Mapped[Optional[str]] = mapped_column(String)
-    delivery_status: Mapped[Optional[str]] = mapped_column(String)  # 'sent' | 'delivered' | 'failed'
+    twilio_sid: Mapped[str | None] = mapped_column(String)
+    delivery_status: Mapped[str | None] = mapped_column(String)  # 'sent' | 'delivered' | 'failed'
 
     job_posting: Mapped[JobPosting] = relationship("JobPosting", back_populates="notifications")
 
@@ -99,15 +100,15 @@ class RunLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    sources_polled: Mapped[Optional[list[Any]]] = mapped_column(JSON)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sources_polled: Mapped[list[Any] | None] = mapped_column(JSON)
     postings_found: Mapped[int] = mapped_column(Integer, default=0)
     postings_new: Mapped[int] = mapped_column(Integer, default=0)
     postings_scored: Mapped[int] = mapped_column(Integer, default=0)
     alerts_sent: Mapped[int] = mapped_column(Integer, default=0)
-    errors: Mapped[Optional[list[Any]]] = mapped_column(JSON)
-    profile_hash: Mapped[Optional[str]] = mapped_column(String)
-    estimated_cost_usd: Mapped[Optional[float]] = mapped_column(Float)
+    errors: Mapped[list[Any] | None] = mapped_column(JSON)
+    profile_hash: Mapped[str | None] = mapped_column(String)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
 
 
 # ── Schema init ───────────────────────────────────────────────────────────────
@@ -139,7 +140,7 @@ def session_scope(engine: Engine) -> Generator[Session, None, None]:
 
 def _now() -> datetime:
     """Current UTC time as a naive datetime (consistent with SQLAlchemy DateTime columns)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _normalize_text(s: str | None) -> str | None:

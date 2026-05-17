@@ -1,7 +1,7 @@
 """Unit tests for src/db.py helpers — all run against in-memory SQLite."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -12,7 +12,6 @@ from src.db import (
     DbStats,
     JobPosting,
     Notification,
-    RunLog,
     get_stats,
     get_unnotified_above_threshold,
     get_unresolved_companies,
@@ -23,7 +22,6 @@ from src.db import (
     session_scope,
     upsert_posting,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -45,7 +43,7 @@ def _posting_data(**overrides: object) -> dict:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # ── init_db ───────────────────────────────────────────────────────────────────
@@ -75,10 +73,9 @@ def test_session_scope_commits_on_success(engine: Engine) -> None:
 
 
 def test_session_scope_rolls_back_on_error(engine: Engine) -> None:
-    with pytest.raises(RuntimeError):
-        with session_scope(engine) as s:
-            s.add(CompanyLookup(name_raw="Acme", status="unresolved"))
-            raise RuntimeError("intentional")
+    with pytest.raises(RuntimeError), session_scope(engine) as s:
+        s.add(CompanyLookup(name_raw="Acme", status="unresolved"))
+        raise RuntimeError("intentional")
 
     with session_scope(engine) as s:
         rows = s.execute(select(CompanyLookup)).scalars().all()
@@ -256,9 +253,8 @@ def test_mark_notified_creates_notification_record(engine: Engine) -> None:
 
 
 def test_mark_notified_raises_for_missing_posting(engine: Engine) -> None:
-    with pytest.raises(ValueError, match="not found"):
-        with session_scope(engine) as s:
-            mark_notified(s, 99999, "+15550001234", "Test SMS")
+    with pytest.raises(ValueError, match="not found"), session_scope(engine) as s:
+        mark_notified(s, 99999, "+15550001234", "Test SMS")
 
 
 def test_mark_notified_phone_stored_as_given(engine: Engine) -> None:

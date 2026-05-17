@@ -4,7 +4,6 @@ import base64
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,13 +24,13 @@ class Settings(BaseSettings):
     alert_phone_number: str
 
     # Optional API keys (scrapers are skipped when absent)
-    adzuna_app_id: Optional[str] = None
-    adzuna_app_key: Optional[str] = None
-    wellfound_api_key: Optional[str] = None
-    search_api_key: Optional[str] = None  # SerpAPI — used for company discovery only
+    adzuna_app_id: str | None = None
+    adzuna_app_key: str | None = None
+    wellfound_api_key: str | None = None
+    search_api_key: str | None = None  # SerpAPI — used for company discovery only
 
     # Profile: base64-encoded profile.cache.json for cloud; falls back to local file for dev
-    profile_cache: Optional[str] = None
+    profile_cache: str | None = None
 
     # Infrastructure
     database_url: str = "sqlite:///./internship_agent.db"
