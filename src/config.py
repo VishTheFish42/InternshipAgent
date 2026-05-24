@@ -4,6 +4,7 @@ import base64
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,14 +46,14 @@ class Settings(BaseSettings):
     claude_scoring_model: str = "claude-haiku-4-5"
     claude_extraction_model: str = "claude-sonnet-4-6"
 
-    def load_profile(self) -> dict:
+    def load_profile(self) -> dict[str, Any]:
         """Return the merged profile dict from PROFILE_CACHE env var or local profile.cache.json."""
         if self.profile_cache:
             raw = base64.b64decode(self.profile_cache).decode("utf-8")
-            return json.loads(raw)
+            return json.loads(raw)  # type: ignore[no-any-return]
         cache_path = Path("profile.cache.json")
         if cache_path.exists():
-            return json.loads(cache_path.read_text(encoding="utf-8"))
+            return json.loads(cache_path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
         return {}
 
 
@@ -61,7 +62,7 @@ def get_settings() -> Settings:
     try:
         return Settings()
     except ValidationError as exc:
-        missing = [err["loc"][0].upper() for err in exc.errors() if err["type"] == "missing"]
+        missing = [str(err["loc"][0]).upper() for err in exc.errors() if err["type"] == "missing"]
         if missing:
             raise SystemExit(
                 f"Missing required environment variables: {', '.join(missing)}\n"
