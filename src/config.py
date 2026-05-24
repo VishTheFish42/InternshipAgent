@@ -61,11 +61,7 @@ def get_settings() -> Settings:
     try:
         return Settings()
     except ValidationError as exc:
-        missing = [
-            err["loc"][0].upper()
-            for err in exc.errors()
-            if err["type"] == "missing"
-        ]
+        missing = [err["loc"][0].upper() for err in exc.errors() if err["type"] == "missing"]
         if missing:
             raise SystemExit(
                 f"Missing required environment variables: {', '.join(missing)}\n"

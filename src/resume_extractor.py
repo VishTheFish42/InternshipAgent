@@ -1,4 +1,5 @@
 """Resume PDF extraction: pdfplumber for text, Claude Sonnet for structured parsing."""
+
 from __future__ import annotations
 
 import base64

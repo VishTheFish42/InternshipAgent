@@ -1,4 +1,5 @@
 """Integration test for rebuild_profile: requires ANTHROPIC_API_KEY."""
+
 from __future__ import annotations
 
 import json
@@ -35,9 +36,7 @@ def _make_resume_pdf(path: Path) -> None:
     stream_parts: list[bytes] = [b"BT\n/F1 10 Tf\n"]
     y = 750
     for line in _RESUME_LINES:
-        escaped = (
-            line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-        )
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         stream_parts.append(f"1 0 0 1 50 {y} Tm ({escaped}) Tj\n".encode("latin-1"))
         y -= 14
     stream_parts.append(b"ET\n")
@@ -80,6 +79,7 @@ def _make_resume_pdf(path: Path) -> None:
 
 # ── Test ──────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     not os.getenv("ANTHROPIC_API_KEY"),
@@ -105,9 +105,14 @@ def test_rebuild_profile_produces_cache_json(
 
     # All expected top-level keys present
     required_keys = {
-        "languages", "frameworks", "tools",
-        "experience_level", "graduation_year",
-        "projects", "work_experience", "source_hash",
+        "languages",
+        "frameworks",
+        "tools",
+        "experience_level",
+        "graduation_year",
+        "projects",
+        "work_experience",
+        "source_hash",
     }
     assert required_keys <= data.keys()
 

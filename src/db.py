@@ -70,13 +70,17 @@ class CompanyLookup(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name_raw: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     name_normalized: Mapped[str | None] = mapped_column(String)
-    ats_type: Mapped[str | None] = mapped_column(String)   # 'greenhouse' | 'lever' | 'workday' | 'custom'
+    ats_type: Mapped[str | None] = mapped_column(
+        String
+    )  # 'greenhouse' | 'lever' | 'workday' | 'custom'
     slug: Mapped[str | None] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, nullable=False)  # 'resolved' | 'unresolved' | 'manual'
+    status: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'resolved' | 'unresolved' | 'manual'
     last_attempted: Mapped[datetime | None] = mapped_column(DateTime)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
-    source: Mapped[str | None] = mapped_column(String)     # 'bundled_table' | 'web_search' | 'manual'
+    source: Mapped[str | None] = mapped_column(String)  # 'bundled_table' | 'web_search' | 'manual'
 
 
 class Notification(Base):
@@ -113,6 +117,7 @@ class RunLog(Base):
 
 # ── Schema init ───────────────────────────────────────────────────────────────
 
+
 def init_db(database_url: str) -> Engine:
     """Create all tables (no-op if they already exist) and return the engine."""
     engine = create_engine(database_url)
@@ -121,6 +126,7 @@ def init_db(database_url: str) -> Engine:
 
 
 # ── Session management ────────────────────────────────────────────────────────
+
 
 @contextmanager
 def session_scope(engine: Engine) -> Generator[Session, None, None]:
@@ -138,6 +144,7 @@ def session_scope(engine: Engine) -> Generator[Session, None, None]:
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
+
 def _now() -> datetime:
     """Current UTC time as a naive datetime (consistent with SQLAlchemy DateTime columns)."""
     return datetime.now(UTC).replace(tzinfo=None)
@@ -151,6 +158,7 @@ def _normalize_text(s: str | None) -> str | None:
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
+
 
 def upsert_posting(session: Session, data: dict[str, Any]) -> tuple[JobPosting, bool]:
     """
@@ -240,9 +248,7 @@ def log_run(session: Session, data: dict[str, Any]) -> RunLog:
 def get_unresolved_companies(session: Session) -> list[CompanyLookup]:
     """Return all company_lookup rows whose career page could not be resolved."""
     return list(
-        session.execute(
-            select(CompanyLookup).where(CompanyLookup.status == "unresolved")
-        ).scalars()
+        session.execute(select(CompanyLookup).where(CompanyLookup.status == "unresolved")).scalars()
     )
 
 
@@ -256,19 +262,13 @@ class DbStats:
 
 def get_stats(session: Session) -> DbStats:
     """Aggregate stats used by `python -m src.db stats`."""
-    total_postings = session.execute(
-        select(func.count()).select_from(JobPosting)
-    ).scalar_one()
+    total_postings = session.execute(select(func.count()).select_from(JobPosting)).scalar_one()
 
-    alerts_sent = session.execute(
-        select(func.count()).select_from(Notification)
-    ).scalar_one()
+    alerts_sent = session.execute(select(func.count()).select_from(Notification)).scalar_one()
 
     unresolved = get_unresolved_companies(session)
 
-    raw_cost = session.execute(
-        select(func.sum(RunLog.estimated_cost_usd))
-    ).scalar_one()
+    raw_cost = session.execute(select(func.sum(RunLog.estimated_cost_usd))).scalar_one()
 
     return DbStats(
         total_postings=total_postings,
@@ -288,7 +288,10 @@ if __name__ == "__main__":
 
     class _CliSettings(BaseSettings):
         """Minimal settings for the DB CLI — only DATABASE_URL is needed."""
-        model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+        model_config = SettingsConfigDict(
+            env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        )
         database_url: str = "sqlite:///./internship_agent.db"
 
     parser = argparse.ArgumentParser(prog="python -m src.db")

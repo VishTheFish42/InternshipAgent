@@ -1,4 +1,5 @@
 """Unit tests for src/db.py helpers — all run against in-memory SQLite."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from src.db import (
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture()
 def engine() -> Engine:
     return init_db("sqlite://")
@@ -48,8 +50,10 @@ def _now() -> datetime:
 
 # ── init_db ───────────────────────────────────────────────────────────────────
 
+
 def test_init_db_creates_tables(engine: Engine) -> None:
     from sqlalchemy import inspect
+
     tables = set(inspect(engine).get_table_names())
     assert tables == {"job_postings", "company_lookup", "notifications", "run_log"}
 
@@ -62,6 +66,7 @@ def test_init_db_idempotent() -> None:
 
 
 # ── session_scope ─────────────────────────────────────────────────────────────
+
 
 def test_session_scope_commits_on_success(engine: Engine) -> None:
     with session_scope(engine) as s:
@@ -84,6 +89,7 @@ def test_session_scope_rolls_back_on_error(engine: Engine) -> None:
 
 # ── upsert_posting ────────────────────────────────────────────────────────────
 
+
 def test_upsert_new_posting_returns_was_new_true(engine: Engine) -> None:
     with session_scope(engine) as s:
         p, was_new = upsert_posting(s, _posting_data())
@@ -93,9 +99,9 @@ def test_upsert_new_posting_returns_was_new_true(engine: Engine) -> None:
 
 def test_upsert_sets_normalized_fields(engine: Engine) -> None:
     with session_scope(engine) as s:
-        p, _ = upsert_posting(s, _posting_data(
-            company="Stripe, Inc.", title="Software Engineering Intern!"
-        ))
+        p, _ = upsert_posting(
+            s, _posting_data(company="Stripe, Inc.", title="Software Engineering Intern!")
+        )
     assert p.company_normalized == "stripe inc"
     assert p.title_normalized == "software engineering intern"
 
@@ -135,18 +141,22 @@ def test_upsert_same_external_id_different_source_inserts_both(engine: Engine) -
 
 def test_upsert_stores_optional_fields(engine: Engine) -> None:
     with session_scope(engine) as s:
-        p, _ = upsert_posting(s, _posting_data(
-            location="Remote",
-            is_remote=True,
-            apply_url="https://apply.stripe.com/1",
-            description="Build payment infrastructure.",
-        ))
+        p, _ = upsert_posting(
+            s,
+            _posting_data(
+                location="Remote",
+                is_remote=True,
+                apply_url="https://apply.stripe.com/1",
+                description="Build payment infrastructure.",
+            ),
+        )
     assert p.location == "Remote"
     assert p.is_remote is True
     assert p.apply_url == "https://apply.stripe.com/1"
 
 
 # ── get_unscored_postings ─────────────────────────────────────────────────────
+
 
 def test_get_unscored_returns_null_score_rows(engine: Engine) -> None:
     with session_scope(engine) as s:
@@ -171,6 +181,7 @@ def test_get_unscored_excludes_scored_rows(engine: Engine) -> None:
 
 
 # ── get_unnotified_above_threshold ────────────────────────────────────────────
+
 
 def test_threshold_excludes_below_score(engine: Engine) -> None:
     with session_scope(engine) as s:
@@ -219,6 +230,7 @@ def test_threshold_results_sorted_by_score_desc(engine: Engine) -> None:
 
 
 # ── mark_notified ─────────────────────────────────────────────────────────────
+
 
 def test_mark_notified_sets_flags(engine: Engine) -> None:
     with session_scope(engine) as s:
@@ -270,19 +282,23 @@ def test_mark_notified_phone_stored_as_given(engine: Engine) -> None:
 
 # ── log_run ───────────────────────────────────────────────────────────────────
 
+
 def test_log_run_inserts_and_returns_entry(engine: Engine) -> None:
     now = _now()
     with session_scope(engine) as s:
-        run = log_run(s, {
-            "started_at": now,
-            "finished_at": now,
-            "sources_polled": ["indeed", "adzuna"],
-            "postings_found": 20,
-            "postings_new": 5,
-            "postings_scored": 5,
-            "alerts_sent": 2,
-            "estimated_cost_usd": 0.04,
-        })
+        run = log_run(
+            s,
+            {
+                "started_at": now,
+                "finished_at": now,
+                "sources_polled": ["indeed", "adzuna"],
+                "postings_found": 20,
+                "postings_new": 5,
+                "postings_scored": 5,
+                "alerts_sent": 2,
+                "estimated_cost_usd": 0.04,
+            },
+        )
     assert run.id is not None
     assert run.alerts_sent == 2
     assert run.sources_polled == ["indeed", "adzuna"]
@@ -298,6 +314,7 @@ def test_log_run_nullable_fields_default_to_none(engine: Engine) -> None:
 
 
 # ── get_unresolved_companies ──────────────────────────────────────────────────
+
 
 def test_get_unresolved_returns_only_unresolved(engine: Engine) -> None:
     with session_scope(engine) as s:
@@ -318,6 +335,7 @@ def test_get_unresolved_empty_when_none(engine: Engine) -> None:
 
 
 # ── get_stats ─────────────────────────────────────────────────────────────────
+
 
 def test_get_stats_returns_dbstats(engine: Engine) -> None:
     with session_scope(engine) as s:

@@ -1,4 +1,5 @@
 """Unit tests for merge_profiles — all run without PDF files or API calls."""
+
 from __future__ import annotations
 
 import logging
@@ -31,6 +32,7 @@ def _profile(**kwargs: object) -> ExtractedProfile:
 
 # ── Edge cases ────────────────────────────────────────────────────────────────
 
+
 def test_merge_empty_list_returns_empty_profile() -> None:
     assert merge_profiles([]) == MergedProfile()
 
@@ -56,6 +58,7 @@ def test_merge_single_profile_passthrough() -> None:
 
 
 # ── Language / framework / tool deduplication ─────────────────────────────────
+
 
 def test_languages_dedup_case_insensitive() -> None:
     p1 = _profile(languages=["Python", "JavaScript"])
@@ -95,6 +98,7 @@ def test_three_profiles_full_union() -> None:
 
 # ── Project deduplication ─────────────────────────────────────────────────────
 
+
 def test_projects_longest_description_wins() -> None:
     p1 = _profile(projects=[Project("App", "Short.", ["Python"])])
     p2 = _profile(projects=[Project("App", "Much longer description here.", ["Python", "React"])])
@@ -118,17 +122,23 @@ def test_projects_different_names_both_kept() -> None:
 
 
 def test_three_profiles_overlapping_projects() -> None:
-    p1 = _profile(projects=[
-        Project("Proj X", "Short.", []),
-        Project("Proj Y", "Only in p1.", []),
-    ])
-    p2 = _profile(projects=[
-        Project("Proj X", "Medium length desc.", []),
-    ])
-    p3 = _profile(projects=[
-        Project("Proj X", "The longest description of them all.", []),
-        Project("Proj Z", "Only in p3.", []),
-    ])
+    p1 = _profile(
+        projects=[
+            Project("Proj X", "Short.", []),
+            Project("Proj Y", "Only in p1.", []),
+        ]
+    )
+    p2 = _profile(
+        projects=[
+            Project("Proj X", "Medium length desc.", []),
+        ]
+    )
+    p3 = _profile(
+        projects=[
+            Project("Proj X", "The longest description of them all.", []),
+            Project("Proj Z", "Only in p3.", []),
+        ]
+    )
     result = merge_profiles([p1, p2, p3])
     assert len(result.projects) == 3
     proj_x = next(p for p in result.projects if "x" in p.name.lower())
@@ -136,6 +146,7 @@ def test_three_profiles_overlapping_projects() -> None:
 
 
 # ── Work experience deduplication ─────────────────────────────────────────────
+
 
 def test_work_experience_dedup_longest_description_wins() -> None:
     p1 = _profile(work_experience=[WorkExperience("SWE Intern", "Acme", "Short.")])
@@ -160,6 +171,7 @@ def test_work_experience_dedup_title_case_insensitive() -> None:
 
 
 # ── Scalar conflict resolution ────────────────────────────────────────────────
+
 
 def test_most_recent_experience_level_wins() -> None:
     p1 = _profile(experience_level="freshman")
