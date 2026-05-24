@@ -62,6 +62,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+markers = [
+    "integration: tests that call external APIs (skip with -m 'not integration')",
+]
 
 [tool.coverage.run]
 source = ["src"]

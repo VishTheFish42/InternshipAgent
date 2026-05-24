@@ -31,14 +31,14 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ## Phase 2 — Resume Ingestion
 
-- [ ] **T-201** Implement `src/resume_extractor.py`: `extract_from_pdf(path: Path) -> ExtractedProfile` using `pdfplumber` for text extraction and Claude Sonnet for structured parsing; return typed `ExtractedProfile` dataclass
-- [ ] **T-202** Design and implement the Claude extraction prompt: ask for languages, frameworks, tools, experience level, graduation year, projects (name + description + technologies), and work experience; return JSON
-- [ ] **T-203** Implement `merge_profiles(profiles: list[ExtractedProfile]) -> MergedProfile`: union of all skills/languages/tools with case-insensitive deduplication; longest project description wins on conflict; most recent file's experience level and graduation year wins
-- [ ] **T-204** Implement `src/resume_extractor.py`: `rebuild_profile(resumes_dir: Path) -> MergedProfile`; hash all PDFs; write result + hash to `profile.cache.json` locally; print `railway variables set PROFILE_CACHE="<base64>"` command to stdout
-- [ ] **T-205** Implement `src/resume_extractor.py`: `detect_resume_changes(resumes_dir: Path, cache: MergedProfile) -> bool`; compare current PDF hash to `_source_hash` in cache
-- [ ] **T-206** Implement the `--rebuild-profile` CLI flag in `src/main.py` that calls `rebuild_profile()` and exits
-- [ ] **T-207** Write unit tests for merge logic: test deduplication, conflict resolution, and edge cases (empty resumes dir, single PDF, 3 PDFs with overlapping projects)
-- [ ] **T-208** Write integration test: feed a sample PDF resume; verify `profile.cache.json` is produced with expected fields
+- [x] **T-201** Implement `src/resume_extractor.py`: `extract_from_pdf(path: Path) -> ExtractedProfile` using `pdfplumber` for text extraction and Claude Sonnet for structured parsing; return typed `ExtractedProfile` dataclass
+- [x] **T-202** Design and implement the Claude extraction prompt: ask for languages, frameworks, tools, experience level, graduation year, projects (name + description + technologies), and work experience; return JSON
+- [x] **T-203** Implement `merge_profiles(profiles: list[ExtractedProfile]) -> MergedProfile`: union of all skills/languages/tools with case-insensitive deduplication; longest project description wins on conflict; most recent file's experience level and graduation year wins
+- [x] **T-204** Implement `src/resume_extractor.py`: `rebuild_profile(resumes_dir: Path) -> MergedProfile`; hash all PDFs; write result + hash to `profile.cache.json` locally; print `railway variables set PROFILE_CACHE="<base64>"` command to stdout
+- [x] **T-205** Implement `src/resume_extractor.py`: `detect_resume_changes(resumes_dir: Path, cache: MergedProfile) -> bool`; compare current PDF hash to `_source_hash` in cache
+- [x] **T-206** Implement the `--rebuild-profile` CLI flag in `src/main.py` that calls `rebuild_profile()` and exits
+- [x] **T-207** Write unit tests for merge logic: test deduplication, conflict resolution, and edge cases (empty resumes dir, single PDF, 3 PDFs with overlapping projects)
+- [x] **T-208** Write integration test: feed a sample PDF resume; verify `profile.cache.json` is produced with expected fields
 
 ---
 
