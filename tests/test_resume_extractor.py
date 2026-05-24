@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from src.resume_extractor import (
     ExtractedProfile,
     MergedProfile,
@@ -13,16 +15,16 @@ from src.resume_extractor import (
 
 
 def _profile(**kwargs: object) -> ExtractedProfile:
-    defaults: dict = dict(
-        languages=[],
-        frameworks=[],
-        tools=[],
-        experience_level="junior",
-        graduation_year=2027,
-        projects=[],
-        work_experience=[],
-        source_file="test.pdf",
-    )
+    defaults: dict = {
+        "languages": [],
+        "frameworks": [],
+        "tools": [],
+        "experience_level": "junior",
+        "graduation_year": 2027,
+        "projects": [],
+        "work_experience": [],
+        "source_file": "test.pdf",
+    }
     defaults.update(kwargs)
     return ExtractedProfile(**defaults)
 
