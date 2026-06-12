@@ -44,12 +44,12 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ## Phase 3 — Company Discovery
 
-- [ ] **T-301** Build `src/data/company_ats_map.json`: initial mapping of ~500 well-known tech companies to ATS type + slug, sourced from SimplifyJobs and other open-source internship trackers
-- [ ] **T-302** Implement `src/company_discoverer.py`: `discover(company_name: str) -> CompanyRecord | None` following the 4-step pipeline (bundled table → Greenhouse web search → Lever web search → generic careers search → unresolved)
-- [ ] **T-303** Implement web search step using SerpAPI or Google Custom Search; extract ATS slug from first matching URL using regex
-- [ ] **T-304** Implement DB caching for resolved companies: never re-query a company that has already been resolved; store resolution source (`bundled_table`, `web_search`, `manual`)
-- [ ] **T-305** Implement weekly re-attempt for unresolved companies (in the weekly digest job)
-- [ ] **T-306** Write unit tests for company discoverer: mock web search; test each discovery step in isolation; test caching behavior
+- [x] **T-301** Build `src/data/company_ats_map.json`: initial mapping of ~500 well-known tech companies to ATS type + slug, sourced from SimplifyJobs and other open-source internship trackers
+- [x] **T-302** Implement `src/company_discoverer.py`: `discover(company_name: str) -> CompanyRecord | None` following the 4-step pipeline (bundled table → Greenhouse web search → Lever web search → generic careers search → unresolved)
+- [x] **T-303** Implement web search step using SerpAPI or Google Custom Search; extract ATS slug from first matching URL using regex
+- [x] **T-304** Implement DB caching for resolved companies: never re-query a company that has already been resolved; store resolution source (`bundled_table`, `web_search`, `manual`)
+- [x] **T-305** Implement weekly re-attempt for unresolved companies (in the weekly digest job)
+- [x] **T-306** Write unit tests for company discoverer: mock web search; test each discovery step in isolation; test caching behavior
 
 ---
 

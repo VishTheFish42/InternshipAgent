@@ -17,12 +17,14 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Required — agent cannot function without these
+    # Required for AI features
     anthropic_api_key: str
-    twilio_account_sid: str
-    twilio_auth_token: str
-    twilio_from_number: str
-    alert_phone_number: str
+
+    # Required for SMS notifications — validated by the notifier at send time
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    twilio_from_number: str | None = None
+    alert_phone_number: str | None = None
 
     # Optional API keys (scrapers are skipped when absent)
     adzuna_app_id: str | None = None
@@ -43,7 +45,7 @@ class Settings(BaseSettings):
     burst_threshold: int = 5
 
     # Claude models
-    claude_scoring_model: str = "claude-haiku-4-5"
+    claude_scoring_model: str = "claude-haiku-4-5-20251001"
     claude_extraction_model: str = "claude-sonnet-4-6"
 
     def load_profile(self) -> dict[str, Any]:
