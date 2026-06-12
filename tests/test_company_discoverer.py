@@ -9,9 +9,13 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from src.company_discoverer import CompanyRecord, RetryResult, _normalize, discover, retry_unresolved
+from src.company_discoverer import (
+    RetryResult,
+    _normalize,
+    discover,
+    retry_unresolved,
+)
 from src.db import Base, CompanyLookup
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -112,7 +116,10 @@ def test_force_bypasses_cache(session):
     discover("Stripe", session)
     session.commit()
 
-    with patch("src.company_discoverer._load_ats_map", return_value={"stripe": {"ats": "greenhouse", "slug": "stripe-new"}}) as mock_map:
+    with patch(
+        "src.company_discoverer._load_ats_map",
+        return_value={"stripe": {"ats": "greenhouse", "slug": "stripe-new"}},
+    ) as mock_map:
         r = discover("Stripe", session, force=True)
     mock_map.assert_called_once()
     assert r.slug == "stripe-new"
@@ -222,7 +229,11 @@ def test_second_call_updates_existing_row(session):
         discover("Ghost Company", session, search_api_key="k", force=True)
     session.commit()
 
-    rows = list(session.execute(select(CompanyLookup).where(CompanyLookup.name_raw == "Ghost Company")).scalars())
+    rows = list(
+        session.execute(
+            select(CompanyLookup).where(CompanyLookup.name_raw == "Ghost Company")
+        ).scalars()
+    )
     assert len(rows) == 1
     assert rows[0].status == "resolved"
     assert rows[0].slug == "ghostco"
