@@ -1,0 +1,10 @@
+preferences:
+  locations: ["United States"]
+  remote_ok: true
+  on_site_ok: true
+  # Postings containing these words are always excluded:
+  keywords_excluded: []
+
+matching:
+  min_score: 70        # 0–100; only alert if Claude scores >= this
+  weekly_digest: true   # send a weekly SMS summary (Sunday 9am) in addition to real-time alerts

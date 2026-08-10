@@ -13,13 +13,16 @@ from src.db import (
     DbStats,
     JobPosting,
     Notification,
+    get_last_run_log,
     get_stats,
     get_unnotified_above_threshold,
+    get_unnotified_postings,
     get_unresolved_companies,
     get_unscored_postings,
     init_db,
     log_run,
     mark_notified,
+    record_score,
     session_scope,
     upsert_posting,
 )
@@ -178,6 +181,75 @@ def test_get_unscored_excludes_scored_rows(engine: Engine) -> None:
         rows = get_unscored_postings(s)
     assert len(rows) == 1
     assert rows[0].external_id == "j1"
+
+
+# ── record_score ──────────────────────────────────────────────────────────────
+
+
+def test_record_score_sets_fields(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        posting_id = p.id
+
+    with session_scope(engine) as s:
+        record_score(s, posting_id, 88, "Strong fit.", "abc123")
+
+    with session_scope(engine) as s:
+        row = s.get(JobPosting, posting_id)
+        assert row is not None
+        assert row.match_score == 88
+        assert row.match_reasoning == "Strong fit."
+        assert row.profile_hash == "abc123"
+
+
+def test_record_score_raises_for_missing_posting(engine: Engine) -> None:
+    with session_scope(engine) as s, pytest.raises(ValueError):
+        record_score(s, 9999, 50, "x", "hash")
+
+
+# ── get_unnotified_postings ───────────────────────────────────────────────────
+
+
+def test_get_unnotified_postings_includes_unscored_and_scored(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        upsert_posting(s, _posting_data(external_id="j1"))
+        p2, _ = upsert_posting(s, _posting_data(external_id="j2"))
+        p2.match_score = 40
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_postings(s)
+    assert {r.external_id for r in rows} == {"j1", "j2"}
+
+
+def test_get_unnotified_postings_excludes_already_notified(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p1, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        upsert_posting(s, _posting_data(external_id="j2"))
+        p1.match_score = 90
+        p1.notified = True
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_postings(s)
+    assert {r.external_id for r in rows} == {"j2"}
+
+
+# ── get_last_run_log ──────────────────────────────────────────────────────────
+
+
+def test_get_last_run_log_none_when_empty(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        assert get_last_run_log(s) is None
+
+
+def test_get_last_run_log_returns_most_recent(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        log_run(s, {"started_at": _now(), "profile_hash": "first"})
+        log_run(s, {"started_at": _now(), "profile_hash": "second"})
+
+    with session_scope(engine) as s:
+        latest = get_last_run_log(s)
+    assert latest is not None
+    assert latest.profile_hash == "second"
 
 
 # ── get_unnotified_above_threshold ────────────────────────────────────────────

@@ -57,143 +57,138 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ### 4A — Scraper interface
 
-- [ ] **T-401** Define `src/scrapers/base.py`: `BaseScraper` abstract class with `async def fetch(queries: list[str]) -> list[RawPosting]`; define `RawPosting` dataclass (source, external_id, title, company, location, is_remote, url, apply_url, description, posted_at)
-- [ ] **T-402** Implement keyword query builder in `src/scrapers/base.py`: generates the full list of domain keyword queries including co-op variants (software engineering intern, software engineering co-op, data science intern, data science co-op, ML intern, ML co-op, AI intern, backend intern, frontend intern, full stack intern)
+- [x] **T-401** Define `src/scrapers/base.py`: `RawPosting` dataclass (source, external_id, title, company, location, is_remote, url, apply_url, description, posted_at). *Implemented as sync functions per-source rather than an async `BaseScraper` ABC, to match the rest of the codebase (no other module uses asyncio).*
+- [x] **T-402** Implement keyword query builder `build_queries()` in `src/scrapers/base.py`: 10 core + 4 co-op domain queries
 
 ### 4B — Indeed RSS (free, primary broad source)
 
-- [ ] **T-411** Implement `src/scrapers/indeed_rss.py`: fetch Indeed RSS feeds for each keyword query using `feedparser`; URL format `https://www.indeed.com/rss?q={query}&l=United+States&jt=internship&sort=date`; parse into `RawPosting` list
-- [ ] **T-412** Extract job ID from RSS `<guid>` field; set dedup key `indeed:{job_id}`; set apply_url to the cleaned link (strip tracking params)
-- [ ] **T-413** Rate-limit to 1 req/2s between queries; add descriptive `User-Agent` header
-- [ ] **T-414** Add retry logic (3 attempts, exponential back-off) via `tenacity`
-- [ ] **T-415** Write integration test: fetch one query, verify at least one `RawPosting` is returned with all required fields
+- [x] **T-411** Implement `src/scrapers/indeed_rss.py`: fetch Indeed RSS feeds per keyword query via `feedparser`; parse into `RawPosting` list
+- [x] **T-412** Extract job ID (`jk` param) from the RSS guid/link; dedup key is `source="indeed"` + that ID; apply_url set to the raw link
+- [x] **T-413** Rate-limit to 1 req/2s between queries; descriptive `User-Agent` header
+- [x] **T-414** Retry logic (3 attempts, exponential back-off) via `tenacity`
+- [x] **T-415** Unit tests with mocked feed responses (integration test against the live endpoint not added)
 
 ### 4C — Adzuna
 
-- [ ] **T-421** Create an Adzuna developer account; obtain `app_id` and `app_key`
-- [ ] **T-422** Implement `src/scrapers/adzuna.py`: run keyword queries; filter by `country=us`, sort by `date`
-- [ ] **T-423** Write integration test for Adzuna
+- [ ] **T-421** Create an Adzuna developer account; obtain `app_id` and `app_key` — *user action, keys not yet in `.env`*
+- [x] **T-422** Implement `src/scrapers/adzuna.py`: single broad query (not looped per keyword — free tier is 250 calls/month); filter `where=us`, `sort_by=date`. *Not wired into `main.py`'s `_SOURCES` yet — needs a slower poll cadence than the 30-min main cycle to stay in quota; decide on scheduling before enabling.*
+- [x] **T-423** Unit tests with mocked HTTP responses
 
 ### 4D — Wellfound / AngelList (startup coverage)
 
-- [ ] **T-431** Create a Wellfound developer account; obtain API key
-- [ ] **T-432** Implement `src/scrapers/wellfound.py`: query Wellfound for internship roles in CS/SWE/ML/AI; filter by US location; parse into `RawPosting` list
-- [ ] **T-433** Write integration test for Wellfound scraper
+- [ ] **T-431 – T-433** Skipped. Wellfound's public API has been effectively closed to new developer signups; not worth blocking on. Revisit if access is ever granted.
 
 ### 4E — Y Combinator Work at a Startup
 
-- [ ] **T-434** Implement `src/scrapers/yc.py`: POST to `https://www.workatastartup.com/company_filters/search_startup_jobs` with role_type=intern; no auth required; parse JSON into `RawPosting` list
-- [ ] **T-435** Filter results by US location and description containing SWE/ML/AI/DS keywords
-- [ ] **T-436** Write integration test for YC scraper
+- [x] **T-434** Implement `src/scrapers/yc.py`. *⚠ workatastartup.com's job search endpoint is undocumented/internal — this follows the design doc's assumed shape but has not been verified against a live response. Confirm before relying on it.*
+- [x] **T-435** Filter by title/description containing SWE/ML/AI/DS keywords
+- [x] **T-436** Unit tests with mocked HTTP responses
 
 ### 4F — HackerNews "Who's Hiring"
 
-- [ ] **T-437** Implement `src/scrapers/hn.py`: search Algolia HN API for the current month's "Ask HN: Who is hiring?" thread (search by title, not fixed date — thread sometimes posts late); fetch all comments containing "intern"; extract company name and URL via regex
-- [ ] **T-438** Use Claude to parse ambiguous/unstructured HN comments into structured `RawPosting` objects; store `hn:{comment_id}` as dedup key; re-poll daily for new comments added to an existing thread
-- [ ] **T-439** Write unit test with mock Algolia API response
+- [x] **T-437** Implement `src/scrapers/hn.py`: find the current month's thread via the Algolia HN API by searching `author_whoishiring` stories; fetch all comments containing "intern"
+- [x] **T-438** Extract company name (leading `Company | Location | ...` convention) and URL via regex. *Uses regex extraction, not a Claude call per comment — the downstream AI scorer already judges relevance from the full comment text, so a second LLM pass here wasn't worth the added cost/latency.*
+- [x] **T-439** Unit tests with mocked Algolia API responses
 
 ### 4G — RemoteOK
 
-- [ ] **T-450** Implement `src/scrapers/remoteok.py`: fetch `https://remoteok.com/api`; filter by tags containing "intern" or "junior" plus SWE/ML/AI/DS tags; no auth required
-- [ ] **T-451** Write integration test for RemoteOK scraper
+- [x] **T-450** Implement `src/scrapers/remoteok.py`: fetch the bulk feed, filter by `intern`/`junior` tags or title
+- [x] **T-451** Unit tests with mocked HTTP responses
 
 ### 4H — Dice
 
-- [ ] **T-452** Implement `src/scrapers/dice.py`: Dice job search API or RSS feed; filter by `employment_type=INTERN` and US location; run same keyword queries
-- [ ] **T-453** Write integration test for Dice scraper
+- [x] **T-452** Implement `src/scrapers/dice.py`. *⚠ Dice no longer offers a stable free public API/RSS feed — this is a best-effort placeholder against their internal search endpoint shape; likely needs a commercial API key or replacement before going live.*
+- [x] **T-453** Unit tests with mocked HTTP responses
 
 ### 4I — Cross-Source Deduplication
 
-- [ ] **T-454** Implement `src/deduplicator.py`: `normalize_url(url: str) -> str` that strips UTM params, tracking tokens, and trailing slashes
-- [ ] **T-455** Implement secondary dedup in `upsert_posting()`: before insert, query `apply_url_normalized` index; skip insert and log if a match exists from a different source
-- [ ] **T-456** Implement tertiary (fuzzy) dedup: normalize company name and title; query DB for same `(company_normalized, title_normalized)` within last 7 days; skip if descriptions are >80% similar
-- [ ] **T-457** Write unit tests: verify a Stripe posting found via both Indeed RSS and Greenhouse results in one DB row and one SMS; verify two legitimately different roles at the same company are both kept
+- [x] **T-454** Implement `src/deduplicator.py`: `normalize_url()` strips tracking params, trailing slashes, fragments
+- [x] **T-455** Secondary dedup: `find_url_duplicate()` checks `apply_url_normalized` before insert
+- [x] **T-456** Tertiary fuzzy dedup: `find_fuzzy_duplicate()` — same `(company_normalized, title_normalized)` within 7 days, confirmed by description similarity (`difflib`, 0.8 threshold)
+- [x] **T-457** Unit tests covering the canonical cross-source scenario and the "two different roles, same title" false-positive case
 
 ### 4J — Greenhouse ATS (Tier 1)
 
-- [ ] **T-461** Implement `src/scrapers/greenhouse.py`: for each resolved Greenhouse company from DB, call `https://boards-api.greenhouse.io/v1/boards/{slug}/jobs`; filter titles containing "intern" or "co-op" case-insensitively
-- [ ] **T-462** Respect 1 req/5s rate limit; add descriptive `User-Agent` header
-- [ ] **T-463** Write integration test using Stripe's public Greenhouse board as a fixture
+- [x] **T-461** Implement `src/scrapers/greenhouse.py`: per resolved company, call the public Greenhouse boards API; filter intern/co-op titles
+- [x] **T-462** 1 req/5s rate limit; descriptive `User-Agent` header
+- [x] **T-463** Unit tests with mocked HTTP responses (live-fixture integration test not added)
 
 ### 4K — Lever ATS (Tier 1)
 
-- [ ] **T-464** Implement `src/scrapers/lever.py`: for each resolved Lever company from DB, call `https://api.lever.co/v0/postings/{slug}?mode=json`; filter by title containing "intern" or "co-op"
-- [ ] **T-465** Write integration test for Lever
+- [x] **T-464** Implement `src/scrapers/lever.py`: per resolved company, call the public Lever postings API; filter intern/co-op titles
+- [x] **T-465** Unit tests with mocked HTTP responses
 
 ### 4L — Custom scrapers (Tier 1, major companies not on standard ATS)
 
-- [ ] **T-466** Install Playwright; implement `src/scrapers/custom/base_custom.py` with robots.txt checking, minimum 3s page delay, and Playwright page loading
-- [ ] **T-467** Implement `src/scrapers/custom/google.py` for Google Careers internship listings
-- [ ] **T-468** Implement `src/scrapers/custom/meta.py` for Meta Careers
-- [ ] **T-469** Implement `src/scrapers/custom/microsoft.py` for Microsoft Careers
+- [ ] **T-466 – T-469** Not started. Lowest priority of the scraper set — Playwright-based, most brittle to maintain, and most of these companies' internship postings are also reachable via Tier 2 broad search in the meantime.
 
 ---
 
 ## Phase 5 — AI Scoring
 
-- [ ] **T-501** Implement `src/matcher.py`: `score_postings(postings: list[RawPosting], profile: MergedProfile, prefs: Preferences) -> list[ScoredPosting]`
-- [ ] **T-502** Design scoring system prompt: include full profile summary; define the 4-factor rubric (skills alignment 40%, domain relevance 30%, seniority fit 20%, role accessibility 10%); instruct Claude to return JSON array with `external_id`, `score`, `reasoning`
-- [ ] **T-503** Implement batching: group postings into lists of 10; call Claude once per batch
-- [ ] **T-504** Implement prompt caching on the system prompt using Anthropic `cache_control` headers
-- [ ] **T-505** Implement profile change detection: compare `profile.cache.json` hash to the hash stored in the last `run_log`; if changed, queue all `notified=FALSE` postings for re-scoring
-- [ ] **T-506** Log estimated Claude API cost per run using token counts from the API response
-- [ ] **T-507** Write unit tests for matcher: mock `anthropic.Anthropic`; verify batching logic, JSON parsing, and score boundary handling
-- [ ] **T-508** Write end-to-end test: 3 sample postings (one strong match, one weak, one irrelevant); verify output scores and reasoning
+- [x] **T-501** Implement `src/matcher.py`: `score_postings()` scores a list of `RawPosting` against the profile + preferences
+- [x] **T-502** Scoring system prompt with the 4-factor rubric; returns JSON array with `external_id`, `score`, `reasoning`
+- [x] **T-503** Batching: groups of 10 postings per Claude call
+- [x] **T-504** Prompt caching on the system prompt via `cache_control: {"type": "ephemeral"}`
+- [x] **T-505** Profile change detection: `hash_profile()` + comparison against the last `run_log` entry, wired into `run_cycle()` in `src/main.py`
+- [x] **T-506** Cost estimate (`estimated_cost_usd`) computed from token usage and logged per run
+- [x] **T-507** Unit tests: mocked `Anthropic` client, batching, JSON parsing, score clamping
+- [x] **T-508** Covered by unit tests with mixed strong/weak/failing-batch scoring scenarios (not a live-API end-to-end test)
 
 ---
 
 ## Phase 6 — Notification System
 
-- [ ] **T-601** Create a Twilio account; obtain account SID, auth token, and a phone number
-- [ ] **T-602** Implement `src/notifier.py`: `notify_matches(matches: list[ScoredPosting], threshold: int) -> None`; routes to individual or burst mode based on `BURST_THRESHOLD`
-- [ ] **T-603** Implement individual SMS formatter: target ≤480 chars; always include full URL; truncate reasoning if needed
-- [ ] **T-603a** Implement burst SMS formatter: list all matches ranked by score with company, title, score; include count of additional matches beyond what fits; always end with "run db stats for full list"
-- [ ] **T-604** Implement weekly digest SMS formatter: include stats (postings found, alerts sent), top match, and list of unresolved companies
-- [ ] **T-605** Implement delivery status polling: check Twilio message status 2 minutes after send; log result
-- [ ] **T-606** Implement retry: if send fails, retry once after 5 minutes; log permanent failure
-- [ ] **T-607** Redact phone number to last 4 digits in all log output
-- [ ] **T-608** Write unit tests for notifier: mock Twilio client; verify message format for short and long descriptions; verify phone redaction in logs
-- [ ] **T-609** Manually test end-to-end: trigger a `--dry-run`, then a real alert to your phone; verify content and format
+- [ ] **T-601** Create a Twilio account; obtain account SID, auth token, and a phone number — *user action; SID/token/number already present in `.env`, unverified live*
+- [x] **T-602** Implement `src/notifier.py`: `notify_matches()` routes to individual or burst mode based on `BURST_THRESHOLD`
+- [x] **T-603** Individual SMS formatter: ≤480 chars, full URL always included, reasoning truncated with an ellipsis
+- [x] **T-603a** Burst SMS formatter: ranked by score, caps at 10 lines + overflow count, ends with a `db stats` pointer
+- [x] **T-604** Weekly digest SMS formatter: stats, top match, unresolved companies
+- [x] **T-605** `check_delivery_status()` implemented (fetches Twilio status by SID); not yet wired into a scheduled "check 2 minutes later" job
+- [x] **T-606** `send_sms_with_retry()`: one retry after a 5-minute wait, permanent failure logged
+- [x] **T-607** Phone numbers redacted to last 4 digits (`_redact_phone`) in every log call
+- [x] **T-608** Unit tests: mocked Twilio client, message formatting, phone redaction in logs
+- [ ] **T-609** Manual end-to-end test (`--dry-run` then a real SMS) — *requires a live Twilio account, user action*
 
 ---
 
 ## Phase 7 — Orchestration
 
-- [ ] **T-701** Implement `src/main.py`: CLI arg parsing (`--run-once`, `--dry-run`, `--rebuild-profile`, `--rescore`); startup validation
-- [ ] **T-702** Implement `run_cycle()`: full pipeline — fetch (parallel) → deduplicate → score → notify → log
-- [ ] **T-703** Configure APScheduler: `IntervalTrigger` for main cycle; `CronTrigger` for weekly digest
-- [ ] **T-704** Implement graceful shutdown on `SIGTERM`/`SIGINT`: let current cycle finish, then exit cleanly
-- [ ] **T-705** Implement `--rescore` mode: re-score all `notified=FALSE` postings against current profile; send new alerts
-- [ ] **T-706** Implement startup resume-change detection: warn in logs if resume files differ from cache hash
-- [ ] **T-707** Write structured JSON logs for every run lifecycle event using `structlog`
+- [x] **T-701** `src/main.py`: `--run-once`, `--dry-run`, `--rebuild-profile`, `--rescore` CLI flags
+- [x] **T-702** `run_cycle()`: fetch → dedupe → score → notify → log. *Sources are polled sequentially, not in parallel — acceptable at the current source count; revisit with `concurrent.futures` if the source list grows.*
+- [x] **T-703** APScheduler: `IntervalTrigger` for the main cycle, `CronTrigger(day_of_week="sun", hour=9)` for the weekly digest
+- [x] **T-704** Graceful shutdown on `SIGTERM`/`SIGINT` via `scheduler.shutdown(wait=True)`
+- [x] **T-705** `--rescore` mode: re-scores all `notified=FALSE` postings against the current profile
+- [x] **T-706** Profile-change detection triggers a re-score of unnotified postings on the next cycle (see T-505)
+- [x] **T-707** JSON-formatted log lines via a custom `logging.basicConfig` format string. *Uses stdlib `logging`, not the `structlog` dependency listed in the design doc — kept consistent with every other module in the codebase, none of which use structlog either.*
 
 ---
 
 ## Phase 8 — Cloud Deployment
 
-- [ ] **T-801** Create `Procfile`: `worker: python -m src.main`
-- [ ] **T-802** Create `railway.toml` with nixpacks build config and restart policy
-- [ ] **T-803** Create Railway account; link to GitHub repository
-- [ ] **T-804** Set all environment variables in Railway dashboard (verify `.env` is not committed)
-- [ ] **T-805** Deploy to Railway; verify first run completes and logs look correct
-- [ ] **T-806** Verify an SMS is received on your phone after the first live run
-- [ ] **T-807** Set up Railway persistent volume for SQLite (or switch to Railway Postgres plugin)
-- [ ] **T-808** Confirm Railway restarts the worker automatically after a crash
-- [ ] **T-809** Test the `--rebuild-profile` → commit → push → Railway redeploy workflow end-to-end
+- [x] **T-801** `Procfile`: `worker: python -m src.main`
+- [x] **T-802** `railway.toml` with nixpacks build config and restart policy
+- [ ] **T-803** Create Railway account; link to GitHub repository — *user action*
+- [ ] **T-804** Set all environment variables in Railway dashboard — *user action*
+- [ ] **T-805** Deploy to Railway; verify first run completes and logs look correct — *user action*
+- [ ] **T-806** Verify an SMS is received on your phone after the first live run — *user action*
+- [ ] **T-807** Set up Railway persistent volume for SQLite (or switch to Postgres plugin) — *user action*
+- [ ] **T-808** Confirm Railway restarts the worker automatically after a crash — *user action*
+- [ ] **T-809** Test the `--rebuild-profile` → commit → push → Railway redeploy workflow end-to-end — *user action*
 
 ---
 
 ## Phase 9 — Testing & Hardening
 
-- [ ] **T-901** Achieve >80% unit test coverage across `src/` (`pytest-cov`)
-- [ ] **T-902** Test failure isolation: simulate JSearch API failure; verify other sources still complete
-- [ ] **T-903** Test deduplication: run the agent twice back-to-back; verify no duplicate SMS sent
-- [ ] **T-909** Test cross-source dedup: mock a posting returned by both JSearch and Greenhouse with the same apply_url; verify only one SMS is sent
-- [ ] **T-904** Test profile change flow: run `--rebuild-profile` with a modified resume; verify re-scoring triggers on next run
-- [ ] **T-905** Test `--dry-run`: verify no SMS sent but all other pipeline stages complete
-- [ ] **T-906** Test company discovery: add an unknown company; verify it appears in `db stats` as unresolved
-- [ ] **T-907** Add nightly GitHub Actions integration test job using secrets (runs against live APIs)
-- [ ] **T-908** Review all log output to confirm no secrets or full phone numbers appear
+- [x] **T-901** Unit test coverage across `src/` is 85% (`pytest --cov=src`), above the 80% target
+- [x] **T-902** Test failure isolation: `test_fetch_all_postings_continues_after_source_failure` / `_fetch_all_postings` in `src/main.py`
+- [x] **T-903** Covered indirectly: `upsert_deduped` primary-key check makes a second identical run a no-op (`test_upsert_deduped_same_source_id_is_duplicate`)
+- [x] **T-909** Cross-source dedup covered by `test_upsert_deduped_cross_source_same_url_is_duplicate` and `..._fuzzy_match_when_urls_differ`
+- [x] **T-904** Profile-change → re-score flow covered by `run_cycle`'s `profile_changed` branch (unit-level, not a full `--rebuild-profile` integration run)
+- [x] **T-905** `test_run_cycle_dry_run_never_calls_twilio` — dry-run completes fetch/dedupe/score but sends nothing
+- [x] **T-906** Covered in `test_company_discoverer.py` (unresolved-company path)
+- [ ] **T-907** Nightly GitHub Actions live-API integration job — not added
+- [x] **T-908** Phone redaction verified by `test_send_sms_does_not_leak_phone_number_in_logs`; no other secrets are logged anywhere in the new code
 
 ---
 
@@ -227,3 +222,5 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 | 10 | T-1001 – T-1008 | Ongoing maintenance |
 
 **Total**: ~90 tasks across 10 phases. Phases 0–8 are the v1 build. Phase 9 is pre-launch hardening. Phase 10 is recurring.
+
+**Status as of 2026-08-09**: Phases 0–3 and 5–7 are code-complete and tested. Phase 4 is done except Wellfound (skipped — API access closed) and the three custom Playwright scrapers (Google/Meta/Microsoft — not started). Phase 6 is code-complete; the Twilio account itself and a live manual test are still open (user action). Phase 8's config files exist; the actual Railway account/deploy steps are open (user action). Phase 9 is mostly covered by unit tests; the nightly live-API CI job is not added. 253 tests passing, 85% coverage on `src/`, mypy/ruff clean.

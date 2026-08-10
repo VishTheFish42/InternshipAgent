@@ -195,6 +195,34 @@ def get_unscored_postings(session: Session) -> list[JobPosting]:
     )
 
 
+def record_score(
+    session: Session, posting_id: int, score: int, reasoning: str, profile_hash: str
+) -> JobPosting:
+    """Write a Claude scoring result back onto a posting."""
+    posting = session.get(JobPosting, posting_id)
+    if posting is None:
+        raise ValueError(f"JobPosting {posting_id} not found")
+    posting.match_score = score
+    posting.match_reasoning = reasoning
+    posting.profile_hash = profile_hash
+    session.flush()
+    return posting
+
+
+def get_unnotified_postings(session: Session) -> list[JobPosting]:
+    """All postings not yet notified, regardless of score — used by --rescore."""
+    return list(
+        session.execute(
+            select(JobPosting).where(JobPosting.notified == False)  # noqa: E712
+        ).scalars()
+    )
+
+
+def get_last_run_log(session: Session) -> RunLog | None:
+    """Most recent run_log entry, or None if the agent has never run."""
+    return session.execute(select(RunLog).order_by(RunLog.id.desc()).limit(1)).scalar_one_or_none()
+
+
 def get_unnotified_above_threshold(session: Session, threshold: int) -> list[JobPosting]:
     """Return scored postings at or above threshold that haven't triggered an SMS yet."""
     return list(
