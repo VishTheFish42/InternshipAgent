@@ -44,12 +44,13 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ## Phase 3 — Company Discovery
 
-- [x] **T-301** Build `src/data/company_ats_map.json`: initial mapping of ~500 well-known tech companies to ATS type + slug, sourced from SimplifyJobs and other open-source internship trackers
+- [x] **T-301** Build `src/data/company_ats_map.json`: initial mapping of ~446 well-known tech companies to ATS type + slug. *Correction: no evidence this was actually scraped from SimplifyJobs — there's no fetch script or cached source data from that original session, just the hand-compiled JSON. Likely LLM-knowledge-generated from well-known public ATS mappings. `scripts/update_ats_map.py` (T-1006) now does a real, verified live fetch from SimplifyJobs going forward.*
 - [x] **T-302** Implement `src/company_discoverer.py`: `discover(company_name: str) -> CompanyRecord | None` following the 4-step pipeline (bundled table → Greenhouse web search → Lever web search → generic careers search → unresolved)
 - [x] **T-303** Implement web search step using SerpAPI or Google Custom Search; extract ATS slug from first matching URL using regex
 - [x] **T-304** Implement DB caching for resolved companies: never re-query a company that has already been resolved; store resolution source (`bundled_table`, `web_search`, `manual`)
 - [x] **T-305** Implement weekly re-attempt for unresolved companies (in the weekly digest job)
 - [x] **T-306** Write unit tests for company discoverer: mock web search; test each discovery step in isolation; test caching behavior
+- [x] **T-307** *(added)* `seed_companies()` in `src/company_discoverer.py`, wired into `run_cycle()` in `src/main.py`: reads `config/companies.yaml` and calls `discover()` once for any company with no existing `company_lookup` row. This was a real gap found during a code walkthrough — `discover()`/`retry_unresolved()` existed and were tested, but nothing ever actually read the user's plain-English company list and triggered discovery on it, so Tier 1 monitoring silently did nothing regardless of what was in `companies.yaml`.
 
 ---
 
@@ -199,7 +200,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [ ] **T-1003** Update `config/companies.yaml` as you discover new target companies (just add the name — no URLs needed)
 - [ ] **T-1004** Adjust `profile.yaml → matching.min_score` if you're getting too many alerts (raise) or too few (lower)
 - [ ] **T-1005** Monitor Railway logs weekly for source errors or unusual API cost spikes
-- [ ] **T-1006** Update `src/data/company_ats_map.json` periodically from the SimplifyJobs repo (run the update script)
+- [x] **T-1006** `scripts/update_ats_map.py` fetches SimplifyJobs' live README, extracts (company, apply URL) pairs, classifies against known Greenhouse/Lever/Workday URL patterns, and adds any company not already in the bundled map (never overwrites existing entries). Run periodically: `python scripts/update_ats_map.py` (`--dry-run` to preview). Verified against the live repo: 170 postings parsed, 56 companies classified, 48 new entries available beyond the existing 446 as of this writing.
 - [ ] **T-1007** Rotate API keys every 6 months (Twilio, RapidAPI, Anthropic)
 - [ ] **T-1008** Review and update custom scrapers (Google, Meta, Microsoft) if career page structure changes
 
@@ -212,7 +213,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 | 0 | T-001 – T-009 | Project bootstrap & CI |
 | 1 | T-101 – T-106 | Core infrastructure (DB, config) |
 | 2 | T-201 – T-208 | Resume ingestion pipeline |
-| 3 | T-301 – T-306 | Company discovery |
+| 3 | T-301 – T-307 | Company discovery |
 | 4 | T-401 – T-469 | Data ingestion (9 sources + cross-source dedup) |
 | 5 | T-501 – T-508 | AI scoring (Claude) |
 | 6 | T-601 – T-609 | SMS notifications (Twilio) |
@@ -224,3 +225,5 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 **Total**: ~90 tasks across 10 phases. Phases 0–8 are the v1 build. Phase 9 is pre-launch hardening. Phase 10 is recurring.
 
 **Status as of 2026-08-09**: Phases 0–3 and 5–7 are code-complete and tested. Phase 4 is done except Wellfound (skipped — API access closed) and the three custom Playwright scrapers (Google/Meta/Microsoft — not started). Phase 6 is code-complete; the Twilio account itself and a live manual test are still open (user action). Phase 8's config files exist; the actual Railway account/deploy steps are open (user action). Phase 9 is mostly covered by unit tests; the nightly live-API CI job is not added. 253 tests passing, 85% coverage on `src/`, mypy/ruff clean.
+
+**Update 2026-08-10**: Closed a real gap found during interview-prep code review — `config/companies.yaml` was never actually connected to `discover()`, so Tier 1 company monitoring was inert regardless of what was configured (T-307, above). Also built `scripts/update_ats_map.py` (T-1006) as a real, live-verified alternative to the never-actually-scraped SimplifyJobs claim in T-301. 282 tests passing.

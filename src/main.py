@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from twilio.rest import Client as TwilioClient
 
-from src.company_discoverer import retry_unresolved
+from src.company_discoverer import retry_unresolved, seed_companies
 from src.config import Settings, get_settings
 from src.db import (
     JobPosting,
@@ -53,6 +53,7 @@ from src.scrapers.base import RawPosting
 
 _RESUMES_DIR = Path("resumes")
 _PROFILE_YAML = Path("profile.yaml")
+_COMPANIES_YAML = Path("config/companies.yaml")
 _log = logging.getLogger(__name__)
 
 # Every registered Tier 1/2 source. Tier 1 (ATS) fetchers take the DB session
@@ -76,6 +77,13 @@ def _load_yaml_config(path: Path = _PROFILE_YAML) -> dict[str, Any]:
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _load_company_names(path: Path = _COMPANIES_YAML) -> list[str]:
+    if not path.exists():
+        return []
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return list(data.get("companies", []))
 
 
 # ── Fetch & dedupe ────────────────────────────────────────────────────────────
@@ -229,6 +237,16 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     """Full pipeline: fetch → dedupe → score → notify → log. Returns the
     run_log data that was recorded."""
     started_at = _now()
+
+    company_names = _load_company_names()
+    if company_names:
+        seed_result = seed_companies(session, company_names, settings.search_api_key)
+        if seed_result.newly_attempted:
+            _log.info(
+                "Company seeding: %d newly attempted, %d already known",
+                seed_result.newly_attempted,
+                seed_result.already_known,
+            )
 
     raw_postings, sources_polled, errors = _fetch_all_postings(session)
     postings_found = len(raw_postings)

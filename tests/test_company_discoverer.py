@@ -11,9 +11,11 @@ from sqlalchemy.orm import Session
 
 from src.company_discoverer import (
     RetryResult,
+    SeedResult,
     _normalize,
     discover,
     retry_unresolved,
+    seed_companies,
 )
 from src.db import Base, CompanyLookup
 
@@ -349,3 +351,63 @@ def test_retry_min_age_days_zero_includes_all_unresolved(session):
     with patch("src.company_discoverer._serpapi", return_value=[]):
         result = retry_unresolved(session, search_api_key="k", min_age_days=0)
     assert result.attempted == 2
+
+
+# ── seed_companies ─────────────────────────────────────────────────────────────
+
+
+def test_seed_companies_empty_list(session):
+    result = seed_companies(session, [])
+    assert result == SeedResult(total_configured=0, newly_attempted=0, already_known=0)
+
+
+def test_seed_companies_attempts_brand_new_company(session):
+    with patch("src.company_discoverer._serpapi", return_value=[]) as mock_search:
+        result = seed_companies(session, ["Stripe"], search_api_key="k")
+    # "Stripe" hits the bundled table (step 1), so no web search is needed —
+    # but it must still count as newly attempted since it had no prior row.
+    mock_search.assert_not_called()
+    assert result == SeedResult(total_configured=1, newly_attempted=1, already_known=0)
+
+    row = session.execute(
+        select(CompanyLookup).where(CompanyLookup.name_raw == "Stripe")
+    ).scalar_one()
+    assert row.status == "resolved"
+
+
+def test_seed_companies_skips_already_resolved(session):
+    discover("Stripe", session)
+    session.commit()
+
+    with patch("src.company_discoverer.discover") as mock_discover:
+        result = seed_companies(session, ["Stripe"])
+
+    mock_discover.assert_not_called()
+    assert result == SeedResult(total_configured=1, newly_attempted=0, already_known=1)
+
+
+def test_seed_companies_skips_already_unresolved():
+    """An unresolved company must NOT be re-attempted on every seed call —
+    that's retry_unresolved()'s job, on a 7-day cadence, to avoid burning
+    search API quota every single cycle."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine, expire_on_commit=False) as session:
+        session.add(_unresolved_row("Unknown Startup"))
+        session.commit()
+
+        with patch("src.company_discoverer.discover") as mock_discover:
+            result = seed_companies(session, ["Unknown Startup"])
+
+        mock_discover.assert_not_called()
+        assert result == SeedResult(total_configured=1, newly_attempted=0, already_known=1)
+
+
+def test_seed_companies_mixed_new_and_known(session):
+    discover("Stripe", session)
+    session.commit()
+
+    with patch("src.company_discoverer._serpapi", return_value=[]):
+        result = seed_companies(session, ["Stripe", "Some New Co"], search_api_key="k")
+
+    assert result == SeedResult(total_configured=2, newly_attempted=1, already_known=1)

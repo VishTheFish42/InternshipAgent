@@ -294,3 +294,45 @@ def retry_unresolved(
         resolved=resolved_count,
         still_unresolved=len(rows) - resolved_count,
     )
+
+
+@dataclass
+class SeedResult:
+    total_configured: int
+    newly_attempted: int
+    already_known: int
+
+
+def seed_companies(
+    session: Session,
+    company_names: list[str],
+    search_api_key: str | None = None,
+) -> SeedResult:
+    """
+    For each name in company_names, run discover() once if — and only if —
+    the company has never been seen before (no row in company_lookup at all).
+    Companies already known are left alone here, regardless of status:
+    resolved ones don't need re-resolving, and unresolved ones are retried on
+    a schedule by retry_unresolved(), not on every seed call. Without that
+    distinction, an unresolved company would burn a fresh discovery attempt
+    (and search API quota) on every single run.
+    """
+    already_known = 0
+    newly_attempted = 0
+
+    for name in company_names:
+        normalized = _normalize(name)
+        existing = session.execute(
+            select(CompanyLookup).where(CompanyLookup.name_normalized == normalized)
+        ).scalar_one_or_none()
+        if existing is not None:
+            already_known += 1
+            continue
+        discover(name, session, search_api_key)
+        newly_attempted += 1
+
+    return SeedResult(
+        total_configured=len(company_names),
+        newly_attempted=newly_attempted,
+        already_known=already_known,
+    )

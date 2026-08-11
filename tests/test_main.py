@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy.engine import Engine
 
-from src.company_discoverer import RetryResult
+from src.company_discoverer import RetryResult, SeedResult
 from src.config import Settings
 from src.db import (
     JobPosting,
@@ -21,6 +21,7 @@ from src.main import (
     _dedupe_and_store,
     _fetch_all_postings,
     _get_top_match_this_week,
+    _load_company_names,
     _load_yaml_config,
     _notify_and_mark,
     _score_and_record,
@@ -103,6 +104,25 @@ def test_load_yaml_config_reads_file(tmp_path: Path) -> None:
     path.write_text("matching:\n  min_score: 80\n", encoding="utf-8")
     config = _load_yaml_config(path)
     assert config["matching"]["min_score"] == 80
+
+
+# ── _load_company_names ────────────────────────────────────────────────────────
+
+
+def test_load_company_names_missing_file_returns_empty(tmp_path: Path) -> None:
+    assert _load_company_names(tmp_path / "nope.yaml") == []
+
+
+def test_load_company_names_reads_file(tmp_path: Path) -> None:
+    path = tmp_path / "companies.yaml"
+    path.write_text("companies:\n  - Stripe\n  - OpenAI\n", encoding="utf-8")
+    assert _load_company_names(path) == ["Stripe", "OpenAI"]
+
+
+def test_load_company_names_empty_companies_key(tmp_path: Path) -> None:
+    path = tmp_path / "companies.yaml"
+    path.write_text("companies: []\n", encoding="utf-8")
+    assert _load_company_names(path) == []
 
 
 # ── _fetch_all_postings ───────────────────────────────────────────────────────
@@ -303,6 +323,52 @@ def test_notify_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
 
 
 # ── run_cycle ─────────────────────────────────────────────────────────────────
+
+
+def test_run_cycle_seeds_companies_from_config(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "companies.yaml").write_text(
+        "companies:\n  - Stripe\n  - OpenAI\n", encoding="utf-8"
+    )
+
+    fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
+        patch("src.main.score_postings", return_value=fake_score),
+        patch(
+            "src.main.seed_companies",
+            return_value=SeedResult(total_configured=2, newly_attempted=2, already_known=0),
+        ) as mock_seed,
+    ):
+        run_cycle(session, _settings(), dry_run=True)
+
+    mock_seed.assert_called_once()
+    args, _ = mock_seed.call_args
+    assert args[1] == ["Stripe", "OpenAI"]
+
+
+def test_run_cycle_skips_seeding_when_no_companies_configured(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
+        patch("src.main.score_postings", return_value=fake_score),
+        patch("src.main.seed_companies") as mock_seed,
+    ):
+        run_cycle(session, _settings(), dry_run=True)
+
+    mock_seed.assert_not_called()
 
 
 def test_run_cycle_dry_run_never_calls_twilio(
