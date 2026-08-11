@@ -56,6 +56,7 @@
 | FR-27 | The match score and a brief Claude reasoning summary SHALL be stored in the database for every scored posting. |
 | FR-28 | When `profile.cache.json` changes (new hash), the system SHALL re-score all previously stored postings where `notified = FALSE` and send new alerts for those that now qualify. |
 | FR-29 | The scoring prompt SHALL instruct Claude to evaluate holistic relevance across all four target domains (SWE, DS, ML, AI) — not just title keyword matching. |
+| FR-29a | For every scored posting, Claude SHALL identify `missing_qualifications`: specific skills, tools, or requirements named in the posting that the candidate's profile does not show. An empty list SHALL indicate no gaps (or the posting isn't a plausible fit at all). |
 
 ### 1.6 Notifications
 
@@ -67,6 +68,10 @@
 | FR-32 | The system SHALL send a digest message on a configurable interval (default: every hour) containing: number of new postings found and alerts sent since the last digest, and names of unresolved companies. |
 | FR-33 | The digest message is in addition to real-time alerts, not a replacement. |
 | FR-34 | All sent notifications SHALL be logged with timestamp and Telegram message ID. |
+| FR-34a | A posting scoring in `[profile.yaml → matching.partial_match_min_score, min_score)` SHALL be treated as a "partial match" and SHALL NOT trigger a full-match alert. |
+| FR-34b | A partial match SHALL only be surfaced if its `missing_qualifications` count is `<= profile.yaml → matching.max_missing_qualifications`. Postings missing more than that SHALL be silently skipped. |
+| FR-34c | All qualifying partial matches in a single polling cycle SHALL be sent as exactly one batched message (never split into individual messages), listing company, title, score, and missing qualifications for each, ranked by score. |
+| FR-34d | A posting SHALL receive at most one partial-match notice. This SHALL be tracked independently of full-match `notified` status, so that a later rescore (e.g. after a profile update) that pushes the same posting's score above `min_score` SHALL still trigger a full-match alert. |
 
 ### 1.7 Scheduling & CLI
 

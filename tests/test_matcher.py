@@ -198,6 +198,32 @@ def test_parse_batch_response_defaults_missing_reasoning():
     assert _parse_batch_response(raw)[0].reasoning == ""
 
 
+def test_parse_batch_response_parses_missing_qualifications():
+    raw = json.dumps(
+        [
+            {
+                "external_id": "1",
+                "score": 60,
+                "reasoning": "Close but missing a few things.",
+                "missing_qualifications": ["Kubernetes", "GraphQL"],
+            }
+        ]
+    )
+    assert _parse_batch_response(raw)[0].missing_qualifications == ["Kubernetes", "GraphQL"]
+
+
+def test_parse_batch_response_defaults_missing_qualifications_to_empty_list():
+    raw = json.dumps([{"external_id": "1", "score": 90, "reasoning": "Great fit."}])
+    assert _parse_batch_response(raw)[0].missing_qualifications == []
+
+
+def test_parse_batch_response_handles_null_missing_qualifications():
+    raw = json.dumps(
+        [{"external_id": "1", "score": 90, "reasoning": "x", "missing_qualifications": None}]
+    )
+    assert _parse_batch_response(raw)[0].missing_qualifications == []
+
+
 # ── _estimate_cost ────────────────────────────────────────────────────────────
 
 
@@ -241,6 +267,27 @@ def test_score_postings_single_batch():
     assert result.input_tokens == 500
     assert result.output_tokens == 40
     mock_client.messages.create.assert_called_once()
+
+
+def test_score_postings_propagates_missing_qualifications():
+    postings = [_posting("1")]
+    raw = json.dumps(
+        [
+            {
+                "external_id": "1",
+                "score": 60,
+                "reasoning": "Close.",
+                "missing_qualifications": ["Kubernetes", "GraphQL"],
+            }
+        ]
+    )
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _FakeMessage(raw)
+
+    with patch("src.matcher.Anthropic", return_value=mock_client):
+        result = score_postings(postings, {}, {}, settings=_settings())
+
+    assert result.scored[0].missing_qualifications == ["Kubernetes", "GraphQL"]
 
 
 def test_score_postings_splits_across_multiple_batches():

@@ -7,10 +7,12 @@ from unittest.mock import MagicMock, patch
 
 from src.notifier import (
     MatchInfo,
+    PartialMatchInfo,
     _redact_chat_id,
     format_burst_message,
     format_digest,
     format_individual_message,
+    format_partial_match_message,
     notify_matches,
     send_message,
     send_message_with_retry,
@@ -27,6 +29,16 @@ def _match(company="Stripe", title="Software Engineering Intern", location="Remo
         score=score,
         reasoning="Strong Python/backend fit, welcoming undergrads.",
         apply_url="https://boards.greenhouse.io/stripe/jobs/123456",
+    )
+
+
+def _partial_match(company="Acme Corp", title="SWE Intern", score=62, missing=None):
+    return PartialMatchInfo(
+        company=company,
+        title=title,
+        score=score,
+        missing_qualifications=missing if missing is not None else ["Kubernetes", "GraphQL"],
+        apply_url="https://boards.greenhouse.io/acme/jobs/1",
     )
 
 
@@ -137,6 +149,48 @@ def test_format_burst_message_no_overflow_note_when_under_cap():
     matches = [_match(company="A"), _match(company="B")]
     body = format_burst_message(matches)
     assert "more" not in body
+
+
+# ── format_partial_match_message ──────────────────────────────────────────────
+
+
+def test_format_partial_match_message_includes_count_and_missing_quals():
+    matches = [_partial_match(company="Acme", missing=["Kubernetes", "GraphQL"])]
+    body = format_partial_match_message(matches)
+    assert "1 partial match this cycle" in body
+    assert "Acme" in body
+    assert "Kubernetes, GraphQL" in body
+
+
+def test_format_partial_match_message_pluralizes_for_multiple():
+    matches = [_partial_match(company="A"), _partial_match(company="B")]
+    body = format_partial_match_message(matches)
+    assert "2 partial matches this cycle" in body
+
+
+def test_format_partial_match_message_ranks_by_score():
+    matches = [_partial_match(company="Zeta", score=50), _partial_match(company="Omega", score=68)]
+    body = format_partial_match_message(matches)
+    assert body.index("Omega") < body.index("Zeta")
+
+
+def test_format_partial_match_message_handles_empty_missing_list():
+    matches = [_partial_match(missing=[])]
+    body = format_partial_match_message(matches)
+    assert "none listed" in body
+
+
+def test_format_partial_match_message_caps_at_ten_lines_with_overflow_note():
+    matches = [_partial_match(company=f"Company{i}", score=i) for i in range(15)]
+    body = format_partial_match_message(matches)
+    for i in range(1, 11):
+        assert f" {i}. " in body
+    assert "+ 5 more" in body
+
+
+def test_format_partial_match_message_includes_resume_tip():
+    body = format_partial_match_message([_partial_match()])
+    assert "resume" in body.lower()
 
 
 # ── format_digest ──────────────────────────────────────────────────────────────

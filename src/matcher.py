@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from anthropic import Anthropic
@@ -37,8 +37,15 @@ Evaluate each posting on:
 - Role accessibility (10%): are there gatekeeping requirements (PhD, security clearance, \
 2+ years experience) the candidate doesn't meet?
 
-Score each posting 0-100. Return ONLY a valid JSON array, no extra text, no markdown fences:
-[{{"external_id": "...", "score": 0-100, "reasoning": "1-2 sentence explanation"}}]
+Score each posting 0-100. Also identify missing_qualifications: specific skills, \
+tools, or requirements named in the posting that the candidate's profile does not show. \
+List each as a short name (e.g. "Kubernetes", "3+ years experience"), not a sentence. \
+Return an empty list if the posting is a strong match or the candidate meets everything \
+stated. Do not pad the list — only include things genuinely absent from the profile.
+
+Return ONLY a valid JSON array, no extra text, no markdown fences:
+[{{"external_id": "...", "score": 0-100, "reasoning": "1-2 sentence explanation", \
+"missing_qualifications": ["..."]}}]
 """
 
 
@@ -47,6 +54,7 @@ class ScoredPosting:
     external_id: str
     score: int
     reasoning: str
+    missing_qualifications: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -135,6 +143,7 @@ def _parse_batch_response(raw: str) -> list[ScoredPosting]:
             external_id=str(item["external_id"]),
             score=max(0, min(100, int(item["score"]))),
             reasoning=item.get("reasoning", ""),
+            missing_qualifications=list(item.get("missing_qualifications") or []),
         )
         for item in data
     ]

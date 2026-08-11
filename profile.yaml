@@ -7,4 +7,6 @@ preferences:
 
 matching:
   min_score: 70        # 0–100; only alert if Claude scores >= this
+  partial_match_min_score: 50    # postings scoring in [this, min_score) are "partial matches"
+  max_missing_qualifications: 5  # only surface a partial match missing this many quals or fewer
   digest_enabled: true  # send a summary message every hour in addition to real-time alerts

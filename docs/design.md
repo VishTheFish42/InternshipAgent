@@ -384,9 +384,13 @@ CREATE TABLE job_postings (
     found_at            DATETIME NOT NULL,
     match_score         INTEGER,            -- 0–100; NULL = not yet scored
     match_reasoning     TEXT,
+    missing_qualifications JSON,            -- Claude-identified gaps vs. the profile (list[str])
     profile_hash        TEXT,               -- hash of profile.cache.json at scoring time
     notified            BOOLEAN DEFAULT FALSE,
     notified_at         DATETIME,
+    partial_notified    BOOLEAN DEFAULT FALSE, -- separate flag: a partial-match notice already
+                                             -- fired, but full-match eligibility (`notified`)
+                                             -- stays open in case a rescore pushes the score up
     UNIQUE(source, external_id)
 );
 
@@ -463,7 +467,11 @@ Claude is instructed to evaluate each posting on:
 - **Seniority fit** (20%): is this appropriate for the user's experience level?
 - **Role accessibility** (10%): are there gatekeeping requirements (PhD, clearance, 2+ YOE) the user doesn't meet?
 
-Score 0–100. Return JSON array with `external_id`, `score`, `reasoning` (1–2 sentences).
+Score 0–100. Claude also identifies `missing_qualifications`: specific skills, tools, or requirements named in the posting that the candidate's profile doesn't show (empty list for a strong match). Return JSON array with `external_id`, `score`, `reasoning` (1–2 sentences), `missing_qualifications` (list of short strings).
+
+### 8.2a Partial matches
+
+A posting scoring in `[partial_match_min_score, min_score)` (defaults: 50–69) is a near-miss, not a full alert. It's only surfaced if `len(missing_qualifications) <= max_missing_qualifications` (default 5) — few enough gaps that a resume update is a plausible fix, not a fundamentally different role. Qualifying postings across a cycle are bundled into **one batched message**, not one per posting (see §9.1a). A posting gets a partial-match notice at most once (`partial_notified` flag) — this is tracked separately from `notified`, so if a later profile update (new resume, new project) pushes the same posting's score above `min_score` on rescore, it's still eligible for a real full-match alert.
 
 ### 8.3 Model selection
 
@@ -515,6 +523,18 @@ Apply: https://boards.greenhouse.io/stripe/jobs/123456
 ```
 
 The full list is always stored in the database. `db stats` shows everything regardless of which mode was used. `BURST_THRESHOLD` is configurable via env var.
+
+### 9.1a Partial-match mode (separate from the above)
+
+Independent of individual/burst mode, one additional batched message is sent per cycle if there are any qualifying partial matches (§8.2a) — always one message covering every partial match found that cycle, never split into individual/burst like full matches:
+
+```
+[InternAgent] 3 partial matches this cycle
+ 1. Acme Corp · SWE Intern (68) — missing: Kubernetes
+ 2. Widget Co · Data Intern (62) — missing: PySpark, Airflow
+ 3. Bolt Labs · Backend Intern (55) — missing: Go, gRPC
+Consider updating your resume/profile if you notice a pattern.
+```
 
 ### 9.2 Real-time message format (individual mode)
 

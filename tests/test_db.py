@@ -16,12 +16,14 @@ from src.db import (
     get_last_run_log,
     get_stats,
     get_unnotified_above_threshold,
+    get_unnotified_partial_matches,
     get_unnotified_postings,
     get_unresolved_companies,
     get_unscored_postings,
     init_db,
     log_run,
     mark_notified,
+    mark_partial_notified,
     record_score,
     session_scope,
     upsert_posting,
@@ -205,6 +207,169 @@ def test_record_score_sets_fields(engine: Engine) -> None:
 def test_record_score_raises_for_missing_posting(engine: Engine) -> None:
     with session_scope(engine) as s, pytest.raises(ValueError):
         record_score(s, 9999, 50, "x", "hash")
+
+
+def test_record_score_stores_missing_qualifications(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        posting_id = p.id
+
+    with session_scope(engine) as s:
+        record_score(
+            s,
+            posting_id,
+            60,
+            "Close fit.",
+            "abc123",
+            missing_qualifications=["Kubernetes", "GraphQL"],
+        )
+
+    with session_scope(engine) as s:
+        row = s.get(JobPosting, posting_id)
+        assert row is not None
+        assert row.missing_qualifications == ["Kubernetes", "GraphQL"]
+
+
+def test_record_score_defaults_missing_qualifications_to_empty_list(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        posting_id = p.id
+
+    with session_scope(engine) as s:
+        record_score(s, posting_id, 90, "Great fit.", "abc123")
+
+    with session_scope(engine) as s:
+        row = s.get(JobPosting, posting_id)
+        assert row is not None
+        assert row.missing_qualifications == []
+
+
+# ── get_unnotified_partial_matches ────────────────────────────────────────────
+
+
+def test_get_unnotified_partial_matches_filters_by_score_range(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        low, _ = upsert_posting(s, _posting_data(external_id="low"))
+        mid, _ = upsert_posting(s, _posting_data(external_id="mid", url="https://x.com/2"))
+        high, _ = upsert_posting(s, _posting_data(external_id="high", url="https://x.com/3"))
+        record_score(s, low.id, 40, "x", "hash")
+        record_score(s, mid.id, 60, "x", "hash")
+        record_score(s, high.id, 85, "x", "hash")
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_partial_matches(
+            s, min_score=50, max_score_exclusive=70, max_missing_qualifications=5
+        )
+    assert {r.external_id for r in rows} == {"mid"}
+
+
+def test_get_unnotified_partial_matches_excludes_too_many_missing_quals(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        record_score(
+            s, p.id, 60, "x", "hash", missing_qualifications=["A", "B", "C", "D", "E", "F"]
+        )
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_partial_matches(
+            s, min_score=50, max_score_exclusive=70, max_missing_qualifications=5
+        )
+    assert rows == []
+
+
+def test_get_unnotified_partial_matches_includes_at_max_missing_quals(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        record_score(s, p.id, 60, "x", "hash", missing_qualifications=["A", "B", "C", "D", "E"])
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_partial_matches(
+            s, min_score=50, max_score_exclusive=70, max_missing_qualifications=5
+        )
+    assert len(rows) == 1
+
+
+def test_get_unnotified_partial_matches_excludes_already_notified(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        record_score(s, p.id, 60, "x", "hash")
+        mark_notified(s, p.id, "123", "msg")
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_partial_matches(
+            s, min_score=50, max_score_exclusive=70, max_missing_qualifications=5
+        )
+    assert rows == []
+
+
+def test_get_unnotified_partial_matches_excludes_already_partial_notified(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        record_score(s, p.id, 60, "x", "hash")
+        mark_partial_notified(s, p.id, "123", "msg")
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_partial_matches(
+            s, min_score=50, max_score_exclusive=70, max_missing_qualifications=5
+        )
+    assert rows == []
+
+
+# ── mark_partial_notified ─────────────────────────────────────────────────────
+
+
+def test_mark_partial_notified_sets_flag_but_not_notified(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        posting_id = p.id
+
+    with session_scope(engine) as s:
+        mark_partial_notified(s, posting_id, "123", "partial match msg")
+
+    with session_scope(engine) as s:
+        row = s.get(JobPosting, posting_id)
+        assert row is not None
+        assert row.partial_notified is True
+        assert row.notified is False
+
+
+def test_mark_partial_notified_creates_notification_record(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        posting_id = p.id
+
+    with session_scope(engine) as s:
+        notif = mark_partial_notified(s, posting_id, "123", "partial match msg")
+
+    assert notif.message == "partial match msg"
+    assert notif.job_posting_id == posting_id
+
+    with session_scope(engine) as s:
+        rows = s.execute(select(Notification)).scalars().all()
+    assert len(rows) == 1
+
+
+def test_mark_partial_notified_raises_for_missing_posting(engine: Engine) -> None:
+    with pytest.raises(ValueError, match="not found"), session_scope(engine) as s:
+        mark_partial_notified(s, 9999, "123", "msg")
+
+
+def test_mark_partial_notified_does_not_block_future_full_match_eligibility(engine: Engine) -> None:
+    """A partial-notified posting must still show up for a full-match alert
+    later if a rescore pushes its score above threshold."""
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        posting_id = p.id
+        record_score(s, posting_id, 60, "x", "hash")
+        mark_partial_notified(s, posting_id, "123", "partial match msg")
+
+    with session_scope(engine) as s:
+        record_score(s, posting_id, 85, "improved", "hash2")
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_above_threshold(s, 70)
+    assert len(rows) == 1
+    assert rows[0].external_id == "j1"
 
 
 # ── get_unnotified_postings ───────────────────────────────────────────────────

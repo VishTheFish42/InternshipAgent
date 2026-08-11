@@ -135,6 +135,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [x] **T-506** Cost estimate (`estimated_cost_usd`) computed from token usage and logged per run
 - [x] **T-507** Unit tests: mocked `Anthropic` client, batching, JSON parsing, score clamping
 - [x] **T-508** Covered by unit tests with mixed strong/weak/failing-batch scoring scenarios (not a live-API end-to-end test)
+- [x] **T-509** *(added 2026-08-11)* Scoring prompt/response extended to return `missing_qualifications: list[str]` per posting — specific gaps vs. the profile, empty list if none. `ScoredPosting` dataclass and `_parse_batch_response()` updated; `record_score()` in `db.py` persists it to a new `job_postings.missing_qualifications` JSON column.
 
 ---
 
@@ -152,6 +153,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [x] **T-607** Chat IDs redacted to last 4 characters (`_redact_chat_id`) in every log call
 - [x] **T-608** Unit tests: mocked `httpx.post` against Telegram's response shape, message formatting, chat ID redaction in logs
 - [x] **T-609** Manual end-to-end test: real bot token/chat ID set, `notifier.send_message()` confirmed delivered to phone on 2026-08-11
+- [x] **T-610** *(added 2026-08-11)* Partial-match notifications: postings scoring in `[partial_match_min_score, min_score)` with `<= max_missing_qualifications` gaps are bundled into one batched message per cycle (`format_partial_match_message()`), listing company/title/score/missing quals, ranked by score, capped like burst mode. New `job_postings.partial_notified` column (separate from `notified`) tracks delivery without blocking a future full-match alert if a rescore pushes the score up. New DB helpers: `get_unnotified_partial_matches()`, `mark_partial_notified()`. Wired into `run_cycle()` in `src/main.py` right after full-match notification. Required a real Alembic migration (`7b8bf99b2722_partial_match_tracking.py`) applied to the live Railway DB — see Phase 8 update below.
 
 ---
 
@@ -171,13 +173,17 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 - [x] **T-801** `Procfile`: `worker: python -m src.main`
 - [x] **T-802** `railway.toml` with nixpacks build config and restart policy
-- [ ] **T-803** Create Railway account; link to GitHub repository — *user action*
-- [ ] **T-804** Set all environment variables in Railway dashboard — *user action*
-- [ ] **T-805** Deploy to Railway; verify first run completes and logs look correct — *user action*
-- [ ] **T-806** Verify a Telegram message is received after the first live run — *user action*
-- [ ] **T-807** Set up Railway persistent volume for SQLite (or switch to Postgres plugin) — *user action*
-- [ ] **T-808** Confirm Railway restarts the worker automatically after a crash — *user action*
-- [ ] **T-809** Test the `--rebuild-profile` → commit → push → Railway redeploy workflow end-to-end — *user action*
+- [x] **T-803** Railway project `InternshipAgent` created, service linked directly to the `VishTheFish42/InternshipAgent` GitHub repo (`main` branch) — pushes auto-redeploy
+- [x] **T-804** All 12 env vars set on the service (Anthropic, Telegram, Adzuna, SerpAPI, `DATABASE_URL`, scheduler/model config), including `PROFILE_CACHE` from the existing local `profile.cache.json`
+- [x] **T-805** Deployed; status `● Online`. Verified via deploy logs: volume mounted, all 3 scheduled jobs registered (`_scheduled_cycle`, `_scheduled_digest`, `_scheduled_adzuna`), scheduler started
+- [x] **T-806** Telegram delivery itself already verified separately (`notifier.send_message()` direct test, message confirmed received). A `--run-once` executed directly inside the live container via `railway ssh` completed the full pipeline — 4/5 sources returned data, 2 new postings found and scored via Claude ($0.0017), 0 alerts sent because neither posting cleared the score threshold (correct filtering behavior, not a failure — the send path itself is proven, just not exercised by this particular run's data)
+- [x] **T-807** Persistent volume (`internshipagent-volume`, 5GB) attached at `/data`; `DATABASE_URL=sqlite:////data/internship_agent.db`. Confirmed working — the `--run-once` SSH test above wrote real rows to it
+- [ ] **T-808** Restart-on-crash policy is configured (`ON_FAILURE`, max 10 retries) but not stress-tested — didn't intentionally crash the live service to verify. Low-risk to leave unverified given `restartPolicyType` is a Railway platform guarantee, not custom code
+- [ ] **T-809** `--rebuild-profile` → commit → push → auto-redeploy workflow not yet tested end-to-end — needs an actual resume update to exercise for real
+
+**Notes from the live deploy:**
+- Indeed's RSS feed returned `403 Forbidden` on the live run — likely bot/rate-limit detection on Railway's IP range. Source failure isolation worked exactly as designed (logged as an error, other 4 sources completed normally, run didn't crash) — but Indeed coverage may need revisiting (rotating User-Agent, a delay, or accepting it as a known gap) if it's consistently blocked from Railway's network.
+- Hit two real Railway CLI issues during setup: `railway volume add` panics (`unwrap() on None`) when passing service/environment by *name* — works fine with explicit IDs instead. `railway ssh` requires an unlocked (non-passphrase-protected) SSH key registered with Railway, and the SSH session's `PATH` does not include the app's Nixpacks virtualenv (`/opt/venv/bin`) — must invoke `/opt/venv/bin/python` explicitly, not bare `python`.
 
 ---
 
@@ -233,3 +239,5 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 **Update 2026-08-11**: Pivoted notifications from Twilio SMS to the Telegram Bot API (Phase 6, above) after Twilio rejected toll-free verification — the business-verification requirement doesn't fit a personal single-recipient tool. `src/notifier.py`, `src/config.py`, `src/main.py`, and the `notifications` table schema were all updated; `SMS_CONSENT.md` was removed (it was written specifically for Twilio A2P compliance and no longer applies). Verified end-to-end: a real Telegram message was sent and confirmed delivered. 282 tests passing, `twilio` dependency fully removed.
 
 **Update 2026-08-11 (later same day)**: Per explicit request — main poll cycle changed from every 30 to every 60 minutes (`RUN_INTERVAL_MINUTES` default); the digest job changed from a weekly `CronTrigger(day_of_week="sun", hour=9)` to an hourly `IntervalTrigger(hours=1)`, and `retry_unresolved()`'s per-company cooldown changed from `min_age_days=7` to `min_age_hours=1` to match (T-305, T-604, T-703, above; `format_weekly_digest`→`format_digest`, `run_weekly_digest`→`run_digest`, `weekly_digest`→`digest_enabled` config key). Digest stats are now scoped to the last hour instead of `get_stats()`'s all-time totals, via a new `_get_period_stats()` helper. Also wired Adzuna into the scheduler on its own `IntervalTrigger(weeks=1)` job (`run_adzuna_poll()`, T-421–T-423, above) — separate from the main cycle to respect its 250-calls/month free tier. 286 tests passing, 85% coverage, mypy/ruff clean.
+
+**Update 2026-08-11 (Railway deployment)**: Phase 8 is done except T-808 (restart-on-crash not stress-tested) and T-809 (resume-update redeploy workflow not yet exercised) — see Phase 8 above for full detail and the two Railway CLI issues hit along the way. The agent is genuinely live: project created, linked to GitHub for auto-deploy on push, all env vars set, persistent volume attached, and a real `--run-once` executed successfully inside the deployed container via `railway ssh` (4/5 sources returned data; Indeed 403'd, isolated cleanly per NFR-01; 2 postings found and scored for $0.0017; 0 alerts because none cleared threshold). This is the first point at which the project is actually running in the cloud rather than only locally.

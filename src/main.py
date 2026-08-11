@@ -26,12 +26,14 @@ from src.db import (
     Notification,
     get_last_run_log,
     get_unnotified_above_threshold,
+    get_unnotified_partial_matches,
     get_unnotified_postings,
     get_unresolved_companies,
     get_unscored_postings,
     init_db,
     log_run,
     mark_notified,
+    mark_partial_notified,
     record_score,
     session_scope,
 )
@@ -39,9 +41,11 @@ from src.deduplicator import upsert_deduped
 from src.matcher import ScoringResult, hash_profile, score_postings
 from src.notifier import (
     MatchInfo,
+    PartialMatchInfo,
     format_burst_message,
     format_digest,
     format_individual_message,
+    format_partial_match_message,
     notify_matches,
     send_message_with_retry,
 )
@@ -165,7 +169,14 @@ def _score_and_record(
     for scored in result.scored:
         posting = by_id.get(int(scored.external_id))
         if posting is not None and posting.id is not None:
-            record_score(session, posting.id, scored.score, scored.reasoning, profile_hash)
+            record_score(
+                session,
+                posting.id,
+                scored.score,
+                scored.reasoning,
+                profile_hash,
+                missing_qualifications=scored.missing_qualifications,
+            )
     return result
 
 
@@ -225,6 +236,38 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
     return alerts_sent
 
 
+def _to_partial_match_info(posting: JobPosting) -> PartialMatchInfo:
+    return PartialMatchInfo(
+        company=posting.company,
+        title=posting.title,
+        score=posting.match_score or 0,
+        missing_qualifications=list(posting.missing_qualifications or []),
+        apply_url=posting.apply_url or posting.url,
+    )
+
+
+def _notify_partial_matches_and_mark(
+    session: Session, partial_matches: list[JobPosting], settings: Settings
+) -> int:
+    """Send one batched message covering all of this cycle's partial matches
+    and mark each as partial_notified. Returns the count successfully sent."""
+    if not partial_matches:
+        return 0
+
+    bot_token = settings.telegram_bot_token or ""
+    chat_id = settings.telegram_chat_id or ""
+    infos = [_to_partial_match_info(p) for p in partial_matches]
+    body = format_partial_match_message(infos)
+    result = send_message_with_retry(bot_token, chat_id, body)
+
+    if not result.success:
+        return 0
+
+    for posting in partial_matches:
+        mark_partial_notified(session, posting.id, chat_id, body, str(result.message_id))
+    return len(partial_matches)
+
+
 # ── Run cycle ─────────────────────────────────────────────────────────────────
 
 
@@ -252,6 +295,8 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     preferences = config.get("preferences", {})
     matching = config.get("matching", {})
     min_score = matching.get("min_score", 70)
+    partial_match_min_score = matching.get("partial_match_min_score", 50)
+    max_missing_qualifications = matching.get("max_missing_qualifications", 5)
     profile_hash = hash_profile(profile)
 
     last_run = get_last_run_log(session)
@@ -266,11 +311,18 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     )
 
     matches = get_unnotified_above_threshold(session, min_score)
+    partial_matches = get_unnotified_partial_matches(
+        session, partial_match_min_score, min_score, max_missing_qualifications
+    )
     if dry_run:
         _log.info("[dry-run] Would send alerts for %d match(es)", len(matches))
+        _log.info("[dry-run] Would send %d partial match(es)", len(partial_matches))
         alerts_sent = 0
     else:
         alerts_sent = _notify_and_mark(session, matches, settings)
+        partial_alerts_sent = _notify_partial_matches_and_mark(session, partial_matches, settings)
+        if partial_alerts_sent:
+            _log.info("Sent partial-match digest covering %d posting(s)", partial_alerts_sent)
 
     run_data = {
         "started_at": started_at,

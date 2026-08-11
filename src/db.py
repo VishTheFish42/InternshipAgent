@@ -55,9 +55,11 @@ class JobPosting(Base):
     found_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     match_score: Mapped[int | None] = mapped_column(Integer)
     match_reasoning: Mapped[str | None] = mapped_column(Text)
+    missing_qualifications: Mapped[list[Any] | None] = mapped_column(JSON)
     profile_hash: Mapped[str | None] = mapped_column(String)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    partial_notified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     notifications: Mapped[list[Notification]] = relationship(
         "Notification", back_populates="job_posting"
@@ -196,7 +198,12 @@ def get_unscored_postings(session: Session) -> list[JobPosting]:
 
 
 def record_score(
-    session: Session, posting_id: int, score: int, reasoning: str, profile_hash: str
+    session: Session,
+    posting_id: int,
+    score: int,
+    reasoning: str,
+    profile_hash: str,
+    missing_qualifications: list[str] | None = None,
 ) -> JobPosting:
     """Write a Claude scoring result back onto a posting."""
     posting = session.get(JobPosting, posting_id)
@@ -205,6 +212,7 @@ def record_score(
     posting.match_score = score
     posting.match_reasoning = reasoning
     posting.profile_hash = profile_hash
+    posting.missing_qualifications = missing_qualifications or []
     session.flush()
     return posting
 
@@ -251,6 +259,66 @@ def mark_notified(
         raise ValueError(f"JobPosting {posting_id} not found")
     posting.notified = True
     posting.notified_at = now
+
+    notif = Notification(
+        job_posting_id=posting_id,
+        sent_at=now,
+        recipient_id=recipient_id,
+        message=message,
+        telegram_message_id=telegram_message_id,
+        delivery_status="sent",
+    )
+    session.add(notif)
+    session.flush()
+    return notif
+
+
+def get_unnotified_partial_matches(
+    session: Session,
+    min_score: int,
+    max_score_exclusive: int,
+    max_missing_qualifications: int,
+) -> list[JobPosting]:
+    """
+    Return scored postings in [min_score, max_score_exclusive) that haven't
+    triggered a full-match alert or a partial-match notice yet, filtered to
+    those missing max_missing_qualifications or fewer qualifications. Score
+    filtering happens in SQL; the missing-qualifications count filter happens
+    in Python since JSON array length isn't portably queryable across backends.
+    """
+    candidates = session.execute(
+        select(JobPosting)
+        .where(
+            JobPosting.match_score >= min_score,
+            JobPosting.match_score < max_score_exclusive,
+            JobPosting.notified == False,  # noqa: E712
+            JobPosting.partial_notified == False,  # noqa: E712
+        )
+        .order_by(JobPosting.match_score.desc())
+    ).scalars()
+    return [
+        p for p in candidates if len(p.missing_qualifications or []) <= max_missing_qualifications
+    ]
+
+
+def mark_partial_notified(
+    session: Session,
+    posting_id: int,
+    recipient_id: str,
+    message: str,
+    telegram_message_id: str | None = None,
+) -> Notification:
+    """
+    Mark a posting as having received a partial-match notice. Deliberately
+    does NOT set posting.notified — that flag gates full-match eligibility,
+    and a partial match should still be able to trigger a real alert later
+    if a rescore (e.g. after a profile update) pushes its score up.
+    """
+    now = _now()
+    posting = session.get(JobPosting, posting_id)
+    if posting is None:
+        raise ValueError(f"JobPosting {posting_id} not found")
+    posting.partial_notified = True
 
     notif = Notification(
         job_posting_id=posting_id,

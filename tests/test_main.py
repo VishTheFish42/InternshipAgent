@@ -15,6 +15,7 @@ from src.db import (
     JobPosting,
     init_db,
     mark_notified,
+    record_score,
     session_scope,
     upsert_posting,
 )
@@ -25,8 +26,10 @@ from src.main import (
     _load_company_names,
     _load_yaml_config,
     _notify_and_mark,
+    _notify_partial_matches_and_mark,
     _score_and_record,
     _to_match_info,
+    _to_partial_match_info,
     _to_scoring_posting,
     run_adzuna_poll,
     run_cycle,
@@ -313,6 +316,89 @@ def test_notify_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
         assert row.notified is False
 
 
+# ── _to_partial_match_info ────────────────────────────────────────────────────
+
+
+def test_to_partial_match_info_maps_fields(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        posting = _stored_posting(session)
+        record_score(
+            session, posting.id, 62, "Close fit.", "hash", missing_qualifications=["Kubernetes"]
+        )
+
+    with session_scope(engine) as session:
+        posting = session.query(JobPosting).one()
+        info = _to_partial_match_info(posting)
+    assert info.score == 62
+    assert info.missing_qualifications == ["Kubernetes"]
+
+
+def test_to_partial_match_info_falls_back_to_url_when_no_apply_url(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        posting = _stored_posting(session, apply_url=None)
+        record_score(session, posting.id, 60, "x", "hash")
+
+    with session_scope(engine) as session:
+        posting = session.query(JobPosting).one()
+        info = _to_partial_match_info(posting)
+    assert info.apply_url == posting.url
+
+
+# ── _notify_partial_matches_and_mark ──────────────────────────────────────────
+
+
+def test_notify_partial_matches_and_mark_empty_list_returns_zero(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        count = _notify_partial_matches_and_mark(session, [], _settings())
+    assert count == 0
+
+
+def test_notify_partial_matches_and_mark_sends_one_batched_message(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        postings = []
+        for i in range(3):
+            p = _stored_posting(
+                session,
+                external_id=str(i),
+                apply_url=f"https://boards.greenhouse.io/stripe/jobs/{i}",
+            )
+            record_score(session, p.id, 60, "x", "hash", missing_qualifications=["Kubernetes"])
+            postings.append(p)
+
+        with patch(
+            "src.main.send_message_with_retry",
+            return_value=SendResult(success=True, message_id=1, error=None),
+        ) as mock_send:
+            count = _notify_partial_matches_and_mark(session, postings, _settings())
+
+    assert count == 3
+    mock_send.assert_called_once()
+    body = mock_send.call_args.args[2]
+    assert "3 partial matches" in body
+
+    with session_scope(engine) as session:
+        rows = session.query(JobPosting).all()
+        assert all(r.partial_notified for r in rows)
+        assert all(not r.notified for r in rows)
+
+
+def test_notify_partial_matches_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        p = _stored_posting(session)
+        record_score(session, p.id, 60, "x", "hash")
+
+        with patch(
+            "src.main.send_message_with_retry",
+            return_value=SendResult(success=False, message_id=None, error="failed"),
+        ):
+            count = _notify_partial_matches_and_mark(session, [p], _settings())
+
+    assert count == 0
+    with session_scope(engine) as session:
+        row = session.query(JobPosting).one()
+        assert row.partial_notified is False
+
+
 # ── run_cycle ─────────────────────────────────────────────────────────────────
 
 
@@ -422,6 +508,88 @@ def test_run_cycle_sends_alerts_for_matches_above_threshold(
 
     assert summary["alerts_sent"] == 1
     mock_notify.assert_called_once()
+
+
+def test_run_cycle_sends_partial_match_digest(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_score: 70\n  partial_match_min_score: 50\n  max_missing_qualifications: 5\n",
+        encoding="utf-8",
+    )
+
+    source = MagicMock(return_value=[_raw_posting(external_id="1")])
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", source)]),
+    ):
+        run_cycle_postings = _fetch_all_postings(session)[0]
+        _dedupe_and_store(session, run_cycle_postings)
+        db_id = session.query(JobPosting).one().id
+
+    fake_score = ScoringResult(
+        scored=[
+            ScoredPosting(
+                external_id=str(db_id),
+                score=60,
+                reasoning="Close fit.",
+                missing_qualifications=["Kubernetes"],
+            )
+        ],
+        input_tokens=10,
+        output_tokens=5,
+        estimated_cost_usd=0.0001,
+    )
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
+        patch("src.main.score_postings", return_value=fake_score),
+        patch(
+            "src.main.send_message_with_retry",
+            return_value=SendResult(success=True, message_id=1, error=None),
+        ) as mock_send,
+    ):
+        run_cycle(session, _settings(), dry_run=False)
+
+    mock_send.assert_called_once()
+    body = mock_send.call_args.args[2]
+    assert "1 partial match" in body
+    assert "Kubernetes" in body
+
+    with session_scope(engine) as session:
+        row = session.query(JobPosting).one()
+        assert row.partial_notified is True
+        assert row.notified is False
+
+
+def test_run_cycle_dry_run_never_sends_partial_match_digest(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_score: 70\n  partial_match_min_score: 50\n", encoding="utf-8"
+    )
+
+    source = MagicMock(return_value=[_raw_posting(external_id="1")])
+    fake_score = ScoringResult(
+        scored=[ScoredPosting(external_id="1", score=60, reasoning="Close fit.")],
+        input_tokens=10,
+        output_tokens=5,
+        estimated_cost_usd=0.0001,
+    )
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", source)]),
+        patch("src.main.score_postings", return_value=fake_score),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        run_cycle(session, _settings(), dry_run=True)
+
+    mock_send.assert_not_called()
 
 
 def test_run_cycle_records_errors_from_failed_sources(

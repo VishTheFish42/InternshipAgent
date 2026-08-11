@@ -1,4 +1,4 @@
-"""Telegram delivery: individual/burst match alerts and the weekly digest.
+"""Telegram delivery: individual/burst match alerts and the periodic digest.
 
 Switched from Twilio SMS after a toll-free verification rejection — Twilio's
 A2P/toll-free review process is built to vet registered businesses, which a
@@ -31,6 +31,15 @@ class MatchInfo:
     location: str | None
     score: int
     reasoning: str
+    apply_url: str
+
+
+@dataclass
+class PartialMatchInfo:
+    company: str
+    title: str
+    score: int
+    missing_qualifications: list[str]
     apply_url: str
 
 
@@ -91,6 +100,32 @@ def format_burst_message(matches: list[MatchInfo]) -> str:
     if remaining > 0:
         lines.append(f" + {remaining} more — run `db stats` to see all")
 
+    return "\n".join(lines)
+
+
+def format_partial_match_message(matches: list[PartialMatchInfo]) -> str:
+    """
+    Format a single batched message listing this cycle's partial matches —
+    postings that scored below the full match threshold but close, with few
+    enough missing qualifications to be a plausible resume-tweak target.
+    One message per cycle, not one per posting, same capped/truncated shape
+    as format_burst_message.
+    """
+    ranked = sorted(matches, key=lambda m: m.score, reverse=True)
+    lines = [
+        f"[{_APP_NAME}] {len(ranked)} partial match{'es' if len(ranked) != 1 else ''} this cycle"
+    ]
+
+    shown = ranked[:_BURST_MAX_LINES]
+    for i, m in enumerate(shown, start=1):
+        missing = ", ".join(m.missing_qualifications) if m.missing_qualifications else "none listed"
+        lines.append(f" {i}. {m.company} · {m.title} ({m.score}) — missing: {missing}")
+
+    remaining = len(ranked) - len(shown)
+    if remaining > 0:
+        lines.append(f" + {remaining} more — run `db stats` to see all")
+
+    lines.append("Consider updating your resume/profile if you notice a pattern.")
     return "\n".join(lines)
 
 
