@@ -20,8 +20,8 @@
 | FR-07 | The user SHALL only need to provide company names in `config/companies.yaml` (e.g., `- Stripe`). The system SHALL automatically determine the company's career page and ATS type without requiring the user to supply URLs or slugs. `config/companies.yaml` SHALL be gitignored so the user's target list is never committed to the repository. `config/companies.example.yaml` SHALL be committed as a format reference. |
 | FR-08 | The company discovery pipeline SHALL resolve company names to career pages by checking, in order: (1) a bundled lookup table of known companies, (2) a web search for the company's Greenhouse or Lever board, (3) a web search for the company's generic careers page. |
 | FR-09 | Resolved company → ATS mappings SHALL be cached in the database so that web search is only performed once per company. |
-| FR-10 | If a company cannot be resolved after all discovery steps, the system SHALL mark it as `unresolved` in the database and log a warning. It SHALL NOT send an error SMS for each individual unresolved company. |
-| FR-11 | Unresolved companies SHALL be surfaced to the user via: (a) the `python -m src.db stats` command, and (b) the weekly digest SMS (count + names). |
+| FR-10 | If a company cannot be resolved after all discovery steps, the system SHALL mark it as `unresolved` in the database and log a warning. It SHALL NOT send an error message for each individual unresolved company. |
+| FR-11 | Unresolved companies SHALL be surfaced to the user via: (a) the `python -m src.db stats` command, and (b) the weekly digest message (count + names). |
 | FR-12 | The system SHALL re-attempt discovery for unresolved companies once per week in case the company has since added a public career page. |
 
 ### 1.3 Resume-Based Profile
@@ -43,7 +43,7 @@
 | ID | Requirement |
 |---|---|
 | FR-21 | The system SHALL assign a stable unique identifier to each posting based on source + external job ID. |
-| FR-22 | The system SHALL never send more than one SMS notification for the same posting. |
+| FR-22 | The system SHALL never send more than one notification for the same posting. |
 | FR-23 | Seen postings SHALL be persisted in the database across restarts. |
 | FR-24 | The system SHALL store full posting metadata for all postings regardless of match score, enabling future re-scoring without re-fetching. |
 
@@ -52,7 +52,7 @@
 | ID | Requirement |
 |---|---|
 | FR-25 | The system SHALL score each new posting 0–100 against `profile.cache.json` using Claude. |
-| FR-26 | The system SHALL only send an SMS alert for a posting if its score >= `profile.yaml → matching.min_score`. |
+| FR-26 | The system SHALL only send an alert for a posting if its score >= `profile.yaml → matching.min_score`. |
 | FR-27 | The match score and a brief Claude reasoning summary SHALL be stored in the database for every scored posting. |
 | FR-28 | When `profile.cache.json` changes (new hash), the system SHALL re-score all previously stored postings where `notified = FALSE` and send new alerts for those that now qualify. |
 | FR-29 | The scoring prompt SHALL instruct Claude to evaluate holistic relevance across all four target domains (SWE, DS, ML, AI) — not just title keyword matching. |
@@ -61,12 +61,12 @@
 
 | ID | Requirement |
 |---|---|
-| FR-30 | The system SHALL send an SMS to the configured phone number when a posting meets the match threshold. |
-| FR-30a | If the number of qualifying matches in a single polling cycle is below `BURST_THRESHOLD` (default: 5), the system SHALL send one individual SMS per match. If at or above the threshold, it SHALL send a single batched summary SMS listing all matches ranked by score, with a note to check `db stats` for details. |
-| FR-31 | Each individual SMS SHALL contain: company name, role title, location/remote status, match score, and direct application URL. |
-| FR-32 | The system SHALL send a weekly digest SMS (configurable day/time, default: Sunday 9am) containing: number of new postings found, number of alerts sent, and names of unresolved companies. |
-| FR-33 | The digest SMS is in addition to real-time alerts, not a replacement. |
-| FR-34 | All sent notifications SHALL be logged with timestamp and Twilio delivery status. |
+| FR-30 | The system SHALL send a Telegram message to the configured chat when a posting meets the match threshold. |
+| FR-30a | If the number of qualifying matches in a single polling cycle is below `BURST_THRESHOLD` (default: 5), the system SHALL send one individual message per match. If at or above the threshold, it SHALL send a single batched summary message listing all matches ranked by score, with a note to check `db stats` for details. |
+| FR-31 | Each individual message SHALL contain: company name, role title, location/remote status, match score, and direct application URL. |
+| FR-32 | The system SHALL send a weekly digest message (configurable day/time, default: Sunday 9am) containing: number of new postings found, number of alerts sent, and names of unresolved companies. |
+| FR-33 | The digest message is in addition to real-time alerts, not a replacement. |
+| FR-34 | All sent notifications SHALL be logged with timestamp and Telegram message ID. |
 
 ### 1.7 Scheduling & CLI
 
@@ -74,7 +74,7 @@
 |---|---|
 | FR-35 | The system SHALL poll all sources on a configurable interval (default: 30 minutes). |
 | FR-36 | `--run-once`: execute a single full cycle and exit. |
-| FR-37 | `--dry-run`: full pipeline without sending any SMS. |
+| FR-37 | `--dry-run`: full pipeline without sending any notification. |
 | FR-38 | `--rebuild-profile`: re-extract profile from all resume PDFs and exit. |
 | FR-39 | `--rescore`: re-score all stored postings against current profile; send new alerts for newly qualifying ones. |
 | FR-40 | `python -m src.db stats`: print summary of total postings found/scored/alerted, unresolved companies (with names), and estimated API cost to date. |
@@ -90,7 +90,7 @@
 |---|---|
 | NFR-01 | A failure in one data source SHALL NOT prevent other sources from completing in the same run. |
 | NFR-02 | Failed API calls SHALL be retried up to 3 times with exponential back-off before marking the source as failed for that run. |
-| NFR-03 | If any source fails for 3 or more consecutive runs, the system SHALL include it in the next weekly digest SMS. |
+| NFR-03 | If any source fails for 3 or more consecutive runs, the system SHALL include it in the next weekly digest message. |
 | NFR-04 | The system SHALL resume correctly after process restart without sending duplicate notifications. |
 
 ### 2.2 Performance
@@ -106,7 +106,7 @@
 
 | ID | Requirement |
 |---|---|
-| NFR-09 | Monthly operating cost SHALL be under $10 USD (hosting + APIs + SMS) at steady state. |
+| NFR-09 | Monthly operating cost SHALL be under $10 USD (hosting + APIs; Telegram is free) at steady state. |
 | NFR-10 | The system SHALL log estimated Claude API cost per run based on token counts in the API response. |
 | NFR-11 | The profile system prompt SHALL use Anthropic prompt caching to reduce repeat token costs on every scoring call. |
 
@@ -117,7 +117,7 @@
 | NFR-12 | API keys SHALL never appear in logs, committed files, or error messages. |
 | NFR-13 | `.env` and the `/resumes` directory SHALL be in `.gitignore`. |
 | NFR-14 | Resume PDF content SHALL be processed locally and never transmitted to third-party services other than the Anthropic API. |
-| NFR-15 | The phone number SHALL be redacted in all log output (show only last 4 digits). |
+| NFR-15 | The Telegram chat ID SHALL be redacted in all log output (show only last 4 characters). |
 
 ### 2.5 Maintainability
 
@@ -143,7 +143,7 @@
 ## 4. Out of Scope (v1)
 
 - Auto-submitting applications.
-- Email notifications (SMS only).
+- Email or SMS notifications (Telegram only).
 - A web UI or dashboard.
 - Tracking application status post-submission.
 - International internships outside the United States.

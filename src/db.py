@@ -91,9 +91,9 @@ class Notification(Base):
         Integer, ForeignKey("job_postings.id"), nullable=False
     )
     sent_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    phone_number: Mapped[str] = mapped_column(String, nullable=False)
+    recipient_id: Mapped[str] = mapped_column(String, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    twilio_sid: Mapped[str | None] = mapped_column(String)
+    telegram_message_id: Mapped[str | None] = mapped_column(String)
     delivery_status: Mapped[str | None] = mapped_column(String)  # 'sent' | 'delivered' | 'failed'
 
     job_posting: Mapped[JobPosting] = relationship("JobPosting", back_populates="notifications")
@@ -240,11 +240,11 @@ def get_unnotified_above_threshold(session: Session, threshold: int) -> list[Job
 def mark_notified(
     session: Session,
     posting_id: int,
-    phone_number: str,
+    recipient_id: str,
     message: str,
-    twilio_sid: str | None = None,
+    telegram_message_id: str | None = None,
 ) -> Notification:
-    """Mark a posting as notified and record the outbound SMS."""
+    """Mark a posting as notified and record the outbound message."""
     now = _now()
     posting = session.get(JobPosting, posting_id)
     if posting is None:
@@ -255,9 +255,9 @@ def mark_notified(
     notif = Notification(
         job_posting_id=posting_id,
         sent_at=now,
-        phone_number=phone_number,
+        recipient_id=recipient_id,
         message=message,
-        twilio_sid=twilio_sid,
+        telegram_message_id=telegram_message_id,
         delivery_status="sent",
     )
     session.add(notif)

@@ -53,8 +53,6 @@ module = [
     "apscheduler.*",
     "playwright",
     "playwright.*",
-    "twilio",
-    "twilio.*",
 ]
 ignore_missing_imports = true
 

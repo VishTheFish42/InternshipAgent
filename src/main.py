@@ -19,7 +19,6 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from twilio.rest import Client as TwilioClient
 
 from src.company_discoverer import retry_unresolved, seed_companies
 from src.config import Settings, get_settings
@@ -45,7 +44,7 @@ from src.notifier import (
     format_individual_message,
     format_weekly_digest,
     notify_matches,
-    send_sms_with_retry,
+    send_message_with_retry,
 )
 from src.resume_extractor import rebuild_profile
 from src.scrapers import greenhouse, hn, indeed_rss, lever, remoteok
@@ -190,13 +189,13 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
     if not matches:
         return 0
 
-    client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
+    bot_token = settings.telegram_bot_token or ""
+    chat_id = settings.telegram_chat_id or ""
     match_infos = [_to_match_info(m) for m in matches]
     results = notify_matches(
-        client,
+        bot_token,
         match_infos,
-        to=settings.alert_phone_number or "",
-        from_=settings.twilio_from_number or "",
+        chat_id=chat_id,
         burst_threshold=settings.burst_threshold,
     )
 
@@ -207,9 +206,7 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
         if result.success:
             body = format_burst_message(match_infos)
             for posting in matches:
-                mark_notified(
-                    session, posting.id, settings.alert_phone_number or "", body, result.sid
-                )
+                mark_notified(session, posting.id, chat_id, body, str(result.message_id))
                 alerts_sent += 1
     else:
         for posting, info, result in zip(matches, match_infos, results, strict=True):
@@ -222,9 +219,7 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
                     info.reasoning,
                     info.apply_url,
                 )
-                mark_notified(
-                    session, posting.id, settings.alert_phone_number or "", body, result.sid
-                )
+                mark_notified(session, posting.id, chat_id, body, str(result.message_id))
                 alerts_sent += 1
 
     return alerts_sent
@@ -304,7 +299,7 @@ def _get_top_match_this_week(session: Session) -> JobPosting | None:
 
 
 def run_weekly_digest(session: Session, settings: Settings) -> None:
-    """Re-attempt unresolved companies and send the weekly summary SMS."""
+    """Re-attempt unresolved companies and send the weekly summary message."""
     config = _load_yaml_config()
     if not config.get("matching", {}).get("weekly_digest", True):
         return
@@ -325,11 +320,8 @@ def run_weekly_digest(session: Session, settings: Settings) -> None:
         _now().strftime("%a %b %-d"), stats.total_postings, stats.alerts_sent, top_match, unresolved
     )
 
-    if settings.twilio_account_sid and settings.twilio_auth_token and settings.alert_phone_number:
-        client = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
-        send_sms_with_retry(
-            client, settings.alert_phone_number, settings.twilio_from_number or "", body
-        )
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        send_message_with_retry(settings.telegram_bot_token, settings.telegram_chat_id, body)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

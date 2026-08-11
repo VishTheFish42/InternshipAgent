@@ -36,7 +36,7 @@
 │                                         ▼                           │
 │                              ┌─────────────────────┐               │
 │                              │   Notifier          │               │
-│                              │   (Twilio SMS)      │               │
+│                              │   (Telegram)        │               │
 │                              └─────────────────────┘               │
 │                                                                     │
 │                              ┌─────────────────────┐               │
@@ -157,7 +157,7 @@ Step 3: Web search "{company} careers internship site:careers.{company}.com"
    │  hit → store custom URL in DB, flag for custom scraper
    │  miss ↓
    ▼
-Step 4: Mark as "unresolved" in DB; include in weekly digest SMS
+Step 4: Mark as "unresolved" in DB; include in weekly digest message
         Re-attempt weekly
 ```
 
@@ -184,13 +184,13 @@ Uses the SerpAPI or Google Custom Search API. Query: `"{company name}" internshi
 
 Unresolved companies are surfaced in two ways:
 1. `python -m src.db stats` prints a section: `Unresolved companies (N): [list]`
-2. The weekly digest SMS includes: `⚠ Could not find career pages for: Acme Corp, Widgets Inc`
+2. The weekly digest message includes: `⚠ Could not find career pages for: Acme Corp, Widgets Inc`
 
 ---
 
 ## 4. Data Sources (Tier 2 — Broad Search)
 
-All Tier 2 sources run the same keyword queries in parallel and feed into the shared deduplication layer. A posting that appears on multiple platforms is stored once and triggers one SMS.
+All Tier 2 sources run the same keyword queries in parallel and feed into the shared deduplication layer. A posting that appears on multiple platforms is stored once and triggers one alert.
 
 ### 4.1 Indeed RSS (free, replaces JSearch)
 
@@ -269,7 +269,7 @@ Tier 2 — Broad job board search (all other companies)
   └── Coverage: effectively unlimited
 ```
 
-The same posting can appear in both tiers (e.g., a Stripe job found via JSearch AND via the Greenhouse direct monitor). Cross-source deduplication (§6) ensures you only get one SMS.
+The same posting can appear in both tiers (e.g., a Stripe job found via Indeed RSS AND via the Greenhouse direct monitor). Cross-source deduplication (§6) ensures you only get one alert.
 
 ### 5.2 Domain-based keyword search (not title matching)
 
@@ -323,7 +323,7 @@ Between all Tier 2 sources, the agent covers every company posting on LinkedIn, 
 
 ## 6. Cross-Source Deduplication
 
-This is the mechanism that ensures the same job posting found on multiple platforms results in exactly one SMS alert.
+This is the mechanism that ensures the same job posting found on multiple platforms results in exactly one alert.
 
 ### 6.1 The problem
 
@@ -332,7 +332,7 @@ The same Stripe internship might appear as:
 - An Adzuna result
 - A Greenhouse direct result (from `boards.greenhouse.io/stripe/jobs/12345`)
 
-Without cross-source dedup, you'd get 3 SMS alerts for one job.
+Without cross-source dedup, you'd get 3 alerts for one job.
 
 ### 6.2 Primary dedup: source + external ID
 
@@ -418,9 +418,9 @@ CREATE TABLE notifications (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     job_posting_id  INTEGER NOT NULL REFERENCES job_postings(id),
     sent_at         DATETIME NOT NULL,
-    phone_number    TEXT NOT NULL,         -- redacted in logs
+    recipient_id    TEXT NOT NULL,         -- redacted in logs
     message         TEXT NOT NULL,
-    twilio_sid      TEXT,
+    telegram_message_id TEXT,
     delivery_status TEXT                   -- 'sent' | 'delivered' | 'failed'
 );
 ```
@@ -490,11 +490,13 @@ Total: well within the $10/month budget.
 
 ## 9. Notification Design
 
+**Delivery channel:** Telegram Bot API, not SMS/Twilio. The original design used Twilio, but Twilio's toll-free/A2P verification process is built to vet registered businesses — it rejected this project's application (reason: business information could not be verified) because a personal single-recipient tool genuinely isn't a business. Telegram's Bot API requires no business verification at all: create a bot via `@BotFather`, get a token, done. It delivers the same real-time push-notification experience.
+
 ### 9.1 Notification modes
 
 The notifier operates in two modes per polling cycle depending on how many matches are found:
 
-**Individual mode** (< `BURST_THRESHOLD` matches, default 5): one SMS per match.
+**Individual mode** (< `BURST_THRESHOLD` matches, default 5): one message per match.
 
 ```
 [InternAgent] Stripe · Software Engineering Intern · Remote
@@ -502,7 +504,7 @@ Match: 88 — Strong Python/backend fit, welcoming undergrads
 Apply: https://boards.greenhouse.io/stripe/jobs/123456
 ```
 
-**Burst mode** (≥ `BURST_THRESHOLD` matches): a single summary SMS listing all matches.
+**Burst mode** (≥ `BURST_THRESHOLD` matches): a single summary message listing all matches.
 
 ```
 [InternAgent] 12 new matches this cycle
@@ -514,7 +516,7 @@ Apply: https://boards.greenhouse.io/stripe/jobs/123456
 
 The full list is always stored in the database. `db stats` shows everything regardless of which mode was used. `BURST_THRESHOLD` is configurable via env var.
 
-### 9.2 Real-time SMS format (individual mode)
+### 9.2 Real-time message format (individual mode)
 
 ```
 [InternAgent] Stripe · Software Engineering Intern · Remote
@@ -522,9 +524,9 @@ Match: 88 — Strong Python/backend fit, welcoming undergrads
 Apply: https://boards.greenhouse.io/stripe/jobs/123456
 ```
 
-Targets ≤480 chars (3 SMS segments). URL is always included verbatim; reasoning is truncated if needed.
+Targets ≤4096 chars (Telegram's hard per-message limit — generous compared to SMS's per-segment cost, so truncation is a rare edge case rather than the norm). URL is always included verbatim; reasoning is truncated if needed.
 
-### 9.3 Weekly digest SMS format
+### 9.3 Weekly digest message format
 
 ```
 [InternAgent] Weekly Summary — Sun May 10
@@ -533,12 +535,12 @@ Top match: Stripe SWE Intern (92/100)
 ⚠ Not found: Acme Corp, Widgets Inc
 ```
 
-### 9.4 Twilio delivery
+### 9.4 Telegram delivery
 
-- Python `twilio` SDK
-- Stores `MessageSid`; polls for delivery status 2 minutes after send
+- Plain `httpx` POST to `https://api.telegram.org/bot{token}/sendMessage` — no dedicated SDK needed for a single-endpoint integration this simple
+- Stores the returned `message_id`
 - On failure: retries once after 5 minutes; logs permanent failure
-- Phone number redacted to last 4 digits in all logs
+- Chat ID redacted to last 4 characters in all logs (lower sensitivity than a phone number, but kept consistent with the project's log-hygiene practice)
 
 ---
 
@@ -567,7 +569,7 @@ each scheduled run:
   └── deduplicate against DB (insert new, skip known)
   └── batch-score all NULL-score postings (groups of 10 via Claude)
   └── for each score >= min_score AND notified=FALSE:
-        └── send SMS
+        └── send Telegram message
         └── mark notified=TRUE
   └── check if profile hash changed → trigger re-score pass
   └── write run_log entry (JSON)
@@ -575,7 +577,7 @@ each scheduled run:
 weekly (Sunday 9am):
   └── compile weekly stats
   └── fetch unresolved companies list
-  └── send digest SMS
+  └── send digest message
   └── re-attempt discovery for unresolved companies
 ```
 
@@ -621,7 +623,7 @@ restartPolicyMaxRetries = 10
 - All secrets in environment variables; `.env` in `.gitignore`
 - `/resumes/` in `.gitignore`; PDFs never leave local machine or Anthropic API
 - `profile.cache.json` contains only extracted skills/experience — no contact info, no address
-- Phone number logged as `****XXXX` only
+- Telegram chat ID logged as `****XXXX` only
 - Database permissions set to `600` on Linux
 
 ---
@@ -633,11 +635,10 @@ restartPolicyMaxRetries = 10
 | `anthropic` | Claude API (resume extraction + job scoring) |
 | `pdfplumber` | PDF text extraction |
 | `feedparser` | Indeed RSS feed parsing |
-| `httpx` | Async HTTP for API calls |
+| `httpx` | HTTP for every scraper, SerpAPI, and the Telegram Bot API (used synchronously — no other module in the codebase uses asyncio) |
 | `playwright` | Headless browser for custom company scrapers |
 | `sqlalchemy` | ORM + DB abstraction |
 | `alembic` | Schema migrations |
-| `twilio` | SMS |
 | `apscheduler` | In-process job scheduler |
 | `pydantic` / `pydantic-settings` | Config validation |
 | `pyyaml` | profile.yaml parsing |

@@ -1,4 +1,4 @@
-"""Unit tests for notifier — all Twilio calls are mocked."""
+"""Unit tests for notifier — all Telegram HTTP calls are mocked."""
 
 from __future__ import annotations
 
@@ -7,14 +7,13 @@ from unittest.mock import MagicMock, patch
 
 from src.notifier import (
     MatchInfo,
-    _redact_phone,
-    check_delivery_status,
+    _redact_chat_id,
     format_burst_message,
     format_individual_message,
     format_weekly_digest,
     notify_matches,
-    send_sms,
-    send_sms_with_retry,
+    send_message,
+    send_message_with_retry,
 )
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -31,15 +30,27 @@ def _match(company="Stripe", title="Software Engineering Intern", location="Remo
     )
 
 
-# ── _redact_phone ─────────────────────────────────────────────────────────────
+def _ok_response(message_id: int = 111) -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = {"ok": True, "result": {"message_id": message_id}}
+    return resp
 
 
-def test_redact_phone_keeps_last_four_digits():
-    assert _redact_phone("+15551234567") == "****4567"
+def _error_response(description: str = "Bad Request: chat not found") -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = {"ok": False, "description": description}
+    return resp
 
 
-def test_redact_phone_handles_short_string():
-    assert _redact_phone("123") == "***"
+# ── _redact_chat_id ───────────────────────────────────────────────────────────
+
+
+def test_redact_chat_id_keeps_last_four_chars():
+    assert _redact_chat_id("123456789") == "****6789"
+
+
+def test_redact_chat_id_handles_short_string():
+    assert _redact_chat_id("123") == "***"
 
 
 # ── format_individual_message ─────────────────────────────────────────────────
@@ -70,27 +81,27 @@ def test_format_individual_message_omits_location_when_none():
     assert "Stripe · SWE Intern" in body
 
 
-def test_format_individual_message_stays_within_sms_budget():
+def test_format_individual_message_stays_within_message_budget():
     body = format_individual_message(
         "Stripe",
         "Software Engineering Intern",
         "Remote",
         88,
-        "x" * 1000,
+        "x" * 5000,
         "https://apply.example/1",
     )
-    assert len(body) <= 480
+    assert len(body) <= 4096
 
 
 def test_format_individual_message_never_truncates_apply_url():
     long_url = "https://apply.example/" + "a" * 300
-    body = format_individual_message("Stripe", "SWE Intern", "Remote", 88, "x" * 1000, long_url)
+    body = format_individual_message("Stripe", "SWE Intern", "Remote", 88, "x" * 5000, long_url)
     assert long_url in body
 
 
 def test_format_individual_message_truncates_reasoning_with_ellipsis():
     body = format_individual_message(
-        "Stripe", "SWE Intern", "Remote", 88, "x" * 1000, "https://apply.example/1"
+        "Stripe", "SWE Intern", "Remote", 88, "x" * 5000, "https://apply.example/1"
     )
     assert "…" in body
 
@@ -155,123 +166,122 @@ def test_format_weekly_digest_omits_top_match_when_none():
     assert "Top match" not in body
 
 
-# ── send_sms ──────────────────────────────────────────────────────────────────
+# ── send_message ──────────────────────────────────────────────────────────────
 
 
-def test_send_sms_success_returns_sid():
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = MagicMock(sid="SM123")
-
-    result = send_sms(mock_client, "+15551234567", "+15557654321", "hello")
+def test_send_message_success_returns_message_id():
+    with patch("src.notifier.httpx.post", return_value=_ok_response(111)) as mock_post:
+        result = send_message("bot-token", "12345", "hello")
 
     assert result.success is True
-    assert result.sid == "SM123"
+    assert result.message_id == 111
     assert result.error is None
+    _, kwargs = mock_post.call_args
+    assert kwargs["json"] == {"chat_id": "12345", "text": "hello"}
 
 
-def test_send_sms_failure_returns_error_not_raises():
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = RuntimeError("Twilio down")
-
-    result = send_sms(mock_client, "+15551234567", "+15557654321", "hello")
+def test_send_message_api_error_returns_error_not_raises():
+    with patch("src.notifier.httpx.post", return_value=_error_response("chat not found")):
+        result = send_message("bot-token", "12345", "hello")
 
     assert result.success is False
-    assert result.sid is None
-    assert "Twilio down" in (result.error or "")
+    assert result.message_id is None
+    assert "chat not found" in (result.error or "")
 
 
-def test_send_sms_does_not_leak_phone_number_in_logs(caplog):
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = RuntimeError("boom")
+def test_send_message_network_exception_returns_error_not_raises():
+    with patch("src.notifier.httpx.post", side_effect=RuntimeError("connection refused")):
+        result = send_message("bot-token", "12345", "hello")
 
-    with caplog.at_level(logging.WARNING):
-        send_sms(mock_client, "+15551234567", "+15557654321", "hello")
-
-    assert "5551234567" not in caplog.text
-    assert "****4567" in caplog.text
+    assert result.success is False
+    assert "connection refused" in (result.error or "")
 
 
-# ── send_sms_with_retry ────────────────────────────────────────────────────────
+def test_send_message_does_not_leak_chat_id_in_logs(caplog):
+    with (
+        patch("src.notifier.httpx.post", side_effect=RuntimeError("boom")),
+        caplog.at_level(logging.WARNING),
+    ):
+        send_message("bot-token", "999999999", "hello")
+
+    assert "999999999" not in caplog.text
+    assert "****9999" in caplog.text
 
 
-def test_send_sms_with_retry_success_on_first_try_no_sleep():
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = MagicMock(sid="SM123")
+# ── send_message_with_retry ───────────────────────────────────────────────────
 
-    with patch("src.notifier.time.sleep") as mock_sleep:
-        result = send_sms_with_retry(mock_client, "+15551234567", "+15557654321", "hello")
+
+def test_send_message_with_retry_success_on_first_try_no_sleep():
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()),
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        result = send_message_with_retry("bot-token", "12345", "hello")
 
     assert result.success is True
     mock_sleep.assert_not_called()
 
 
-def test_send_sms_with_retry_retries_once_after_failure():
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = [RuntimeError("boom"), MagicMock(sid="SM456")]
-
-    with patch("src.notifier.time.sleep") as mock_sleep:
-        result = send_sms_with_retry(mock_client, "+15551234567", "+15557654321", "hello")
+def test_send_message_with_retry_retries_once_after_failure():
+    with (
+        patch(
+            "src.notifier.httpx.post",
+            side_effect=[RuntimeError("boom"), _ok_response(222)],
+        ),
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        result = send_message_with_retry("bot-token", "12345", "hello")
 
     assert result.success is True
-    assert result.sid == "SM456"
+    assert result.message_id == 222
     mock_sleep.assert_called_once_with(300)
 
 
-def test_send_sms_with_retry_permanent_failure_after_both_attempts_fail(caplog):
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = RuntimeError("boom")
-
-    with patch("src.notifier.time.sleep"), caplog.at_level(logging.ERROR):
-        result = send_sms_with_retry(mock_client, "+15551234567", "+15557654321", "hello")
+def test_send_message_with_retry_permanent_failure_after_both_attempts_fail(caplog):
+    with (
+        patch("src.notifier.httpx.post", side_effect=RuntimeError("boom")),
+        patch("src.notifier.time.sleep"),
+        caplog.at_level(logging.ERROR),
+    ):
+        result = send_message_with_retry("bot-token", "12345", "hello")
 
     assert result.success is False
     assert "permanently failed" in caplog.text
-
-
-# ── check_delivery_status ──────────────────────────────────────────────────────
-
-
-def test_check_delivery_status_returns_status():
-    mock_client = MagicMock()
-    mock_client.messages.return_value.fetch.return_value = MagicMock(status="delivered")
-
-    status = check_delivery_status(mock_client, "SM123")
-
-    assert status == "delivered"
-    mock_client.messages.assert_called_once_with("SM123")
 
 
 # ── notify_matches ──────────────────────────────────────────────────────────────
 
 
 def test_notify_matches_empty_list_sends_nothing():
-    mock_client = MagicMock()
-    results = notify_matches(mock_client, [], to="+1", from_="+2", burst_threshold=5)
+    with patch("src.notifier.httpx.post") as mock_post:
+        results = notify_matches("bot-token", [], chat_id="12345", burst_threshold=5)
     assert results == []
-    mock_client.messages.create.assert_not_called()
+    mock_post.assert_not_called()
 
 
 def test_notify_matches_individual_mode_below_threshold():
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = MagicMock(sid="SM1")
     matches = [_match(company="A"), _match(company="B")]
 
-    with patch("src.notifier.time.sleep"):
-        results = notify_matches(mock_client, matches, to="+1", from_="+2", burst_threshold=5)
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
+        patch("src.notifier.time.sleep"),
+    ):
+        results = notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
 
     assert len(results) == 2
-    assert mock_client.messages.create.call_count == 2
+    assert mock_post.call_count == 2
 
 
 def test_notify_matches_burst_mode_at_or_above_threshold():
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = MagicMock(sid="SM1")
     matches = [_match(company=f"C{i}") for i in range(5)]
 
-    with patch("src.notifier.time.sleep"):
-        results = notify_matches(mock_client, matches, to="+1", from_="+2", burst_threshold=5)
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
+        patch("src.notifier.time.sleep"),
+    ):
+        results = notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
 
     assert len(results) == 1
-    assert mock_client.messages.create.call_count == 1
-    body = mock_client.messages.create.call_args.kwargs["body"]
+    assert mock_post.call_count == 1
+    body = mock_post.call_args.kwargs["json"]["text"]
     assert "5 new matches" in body

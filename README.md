@@ -1,6 +1,6 @@
 # InternshipAgent
 
-An autonomous agent that continuously monitors job boards and company career pages for new internship postings, scores them against your resume using Claude AI, and texts you the moment a strong match appears.
+An autonomous agent that continuously monitors job boards and company career pages for new internship postings, scores them against your resume using Claude AI, and messages you on Telegram the moment a strong match appears.
 
 ## What it does
 
@@ -9,7 +9,7 @@ An autonomous agent that continuously monitors job boards and company career pag
 3. **Reads your resume** — drop a PDF (or multiple) into the `/resumes` folder; Claude extracts your skills, experience, and projects into a unified profile automatically. No manual YAML editing.
 4. **Deduplicates** postings so you never get the same alert twice.
 5. **Scores** each new posting 0–100 against your extracted profile and only alerts when the match exceeds your threshold.
-6. **Texts you** via SMS with company name, role, match score, and a direct application link.
+6. **Messages you** on Telegram with company name, role, match score, and a direct application link.
 
 ## Architecture at a glance
 
@@ -21,17 +21,17 @@ An autonomous agent that continuously monitors job boards and company career pag
                                                           ▼
 config/companies.yaml ──► ATS Discoverer ──► per-company ATS scrapers (Tier 1)
                                                           │
-  Indeed RSS · Adzuna · Wellfound · YC ─────────────────── ┤  (Tier 2)
-  HackerNews · RemoteOK · Dice                            │
+      Indeed RSS · Adzuna · YC ────────────────────────── ┤  (Tier 2)
+      HackerNews · RemoteOK · Dice                        │
                                                           ▼
                                               Cross-source Deduplicator
                                                           │
                                                    AI Scorer (Claude)
                                                           │
-                                          1 match → individual SMS
-                                          5+ matches → batched summary SMS
+                                          1 match → individual message
+                                          5+ matches → batched summary message
                                                           │
-                                                   Twilio ──► your phone
+                                                Telegram Bot API ──► your phone
 ```
 
 Full design in [docs/design.md](docs/design.md).
@@ -39,10 +39,9 @@ Full design in [docs/design.md](docs/design.md).
 ## Prerequisites
 
 - Python 3.11+
-- A [Twilio](https://www.twilio.com) account (free trial is enough to start)
+- A [Telegram](https://telegram.org) account and a bot token from [@BotFather](https://t.me/BotFather) (free, no business verification required)
 - An [Anthropic](https://console.anthropic.com) API key
 - An [Adzuna](https://developer.adzuna.com) API key (free)
-- A [Wellfound](https://wellfound.com) developer account (free)
 - A [SerpAPI](https://serpapi.com) key (free tier: 100 searches/month — used only for company discovery, not job searching)
 
 ## Quick start
@@ -62,7 +61,7 @@ playwright install chromium    # for custom scrapers
 
 # 4. Copy and fill in credentials
 cp .env.example .env
-# Edit .env with your API keys and phone number
+# Edit .env with your API keys and Telegram bot token/chat ID
 
 # 5. Add your resume
 mkdir resumes
@@ -133,7 +132,7 @@ preferences:
 
 matching:
   min_score: 70        # 0–100; only alert if Claude scores >= this
-  weekly_digest: true  # send a weekly SMS summary (Sunday 9am) in addition to real-time alerts
+  weekly_digest: true  # send a weekly summary message (Sunday 9am) in addition to real-time alerts
 ```
 
 ## Adding companies to monitor
@@ -159,7 +158,7 @@ python -m src.db stats
 # Shows: postings found/scored/alerted, unresolved companies (by name), estimated API cost
 ```
 
-Unresolved companies are also included in your weekly digest SMS.
+Unresolved companies are also included in your weekly digest message.
 
 ## How the agent covers companies you haven't listed
 
@@ -168,9 +167,9 @@ You don't need to list every company. The agent uses a **two-tier strategy**:
 | Tier | Sources | What it covers | Speed |
 |---|---|---|---|
 | **Tier 1** — Direct monitoring | Greenhouse · Lever · Custom scrapers | ~150 companies in your `companies.yaml`, checked at their career page directly | Fast: within one poll cycle |
-| **Tier 2** — Broad search | JSearch · Adzuna · Wellfound · YC · HackerNews · RemoteOK · Dice | Every company posting on LinkedIn, Indeed, ZipRecruiter, Glassdoor, Wellfound, Dice, RemoteOK, or HN | Slightly slower: depends on board indexing |
+| **Tier 2** — Broad search | Indeed RSS · Adzuna · YC · HackerNews · RemoteOK · Dice | Every company posting on Indeed, RemoteOK, Dice, YC-batch startups, or HN's monthly hiring thread | Slightly slower: depends on board indexing |
 
-**Cross-source deduplication** ensures that if the same posting appears on multiple platforms (e.g., a Stripe job found via JSearch *and* via the Greenhouse direct monitor), you get exactly one SMS. The agent deduplicates by canonical application URL, then by company + title as a fallback.
+**Cross-source deduplication** ensures that if the same posting appears on multiple platforms (e.g., a Stripe job found via Indeed RSS *and* via the Greenhouse direct monitor), you get exactly one alert. The agent deduplicates by canonical application URL, then by company + title as a fallback.
 
 You only need to list companies in Tier 1 where you want the fastest possible alert, or where the company doesn't post publicly on any board (e.g., some quant firms).
 
@@ -180,26 +179,23 @@ See `.env.example` for all required variables. Key ones:
 
 | Variable | Description |
 |---|---|
-| `TWILIO_ACCOUNT_SID` | Your Twilio Account SID |
-| `TWILIO_AUTH_TOKEN` | Your Twilio Auth Token |
-| `TWILIO_FROM_NUMBER` | Your Twilio phone number |
-| `ALERT_PHONE_NUMBER` | Your personal phone number to receive SMS |
+| `TELEGRAM_BOT_TOKEN` | Your bot's token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Your chat ID to receive alerts (find via `getUpdates`, see `.env.example`) |
 | `ANTHROPIC_API_KEY` | Claude API key for resume extraction + job scoring |
 | `PROFILE_CACHE` | Base64-encoded `profile.cache.json` — set via `--rebuild-profile` output |
 | `ADZUNA_APP_ID` | Adzuna API app ID |
 | `ADZUNA_APP_KEY` | Adzuna API key |
-| `WELLFOUND_API_KEY` | Wellfound (AngelList) API key — startup coverage |
 | `SEARCH_API_KEY` | SerpAPI key — used only for company ATS discovery, not job searching |
 | `DATABASE_URL` | SQLite path or Postgres URL |
 | `RUN_INTERVAL_MINUTES` | How often to poll (default: `30`) |
-| `BURST_THRESHOLD` | Min matches in one cycle to trigger a batched SMS instead of individual ones (default: `5`) |
+| `BURST_THRESHOLD` | Min matches in one cycle to trigger a batched message instead of individual ones (default: `5`) |
 
 ## CLI reference
 
 ```bash
 python -m src.main                      # start scheduler (runs every 30 min)
 python -m src.main --run-once           # single run, then exit
-python -m src.main --dry-run            # full pipeline but no SMS sent
+python -m src.main --dry-run            # full pipeline but no message sent
 python -m src.main --rebuild-profile    # re-extract profile from /resumes PDFs
 python -m src.main --rescore            # re-score all stored postings vs. current profile
 python -m src.db init                   # initialize database schema
@@ -246,14 +242,13 @@ InternshipAgent/
     ├── company_discoverer.py     # company name → ATS slug/URL
     ├── deduplicator.py           # cross-source dedup logic
     ├── matcher.py                # AI scoring
-    ├── notifier.py               # Twilio SMS (individual + burst batching)
+    ├── notifier.py               # Telegram Bot API (individual + burst batching)
     ├── data/
     │   └── company_ats_map.json  # bundled ATS lookup table
     ├── scrapers/
     │   ├── base.py
     │   ├── indeed_rss.py         # Indeed RSS feed (free)
     │   ├── adzuna.py
-    │   ├── wellfound.py
     │   ├── yc.py                 # YC Work at a Startup
     │   ├── hn.py                 # HackerNews Who's Hiring
     │   ├── remoteok.py

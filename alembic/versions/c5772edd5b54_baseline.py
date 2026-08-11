@@ -79,9 +79,9 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('job_posting_id', sa.Integer(), nullable=False),
     sa.Column('sent_at', sa.DateTime(), nullable=False),
-    sa.Column('phone_number', sa.String(), nullable=False),
+    sa.Column('recipient_id', sa.String(), nullable=False),
     sa.Column('message', sa.Text(), nullable=False),
-    sa.Column('twilio_sid', sa.String(), nullable=True),
+    sa.Column('telegram_message_id', sa.String(), nullable=True),
     sa.Column('delivery_status', sa.String(), nullable=True),
     sa.ForeignKeyConstraint(['job_posting_id'], ['job_postings.id'], ),
     sa.PrimaryKeyConstraint('id')

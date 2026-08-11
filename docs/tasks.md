@@ -140,16 +140,18 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ## Phase 6 — Notification System
 
-- [ ] **T-601** Create a Twilio account; obtain account SID, auth token, and a phone number — *user action; SID/token/number already present in `.env`, unverified live*
+**Pivoted from Twilio SMS to the Telegram Bot API on 2026-08-11.** Twilio's toll-free verification was rejected (reason code 30445: business information could not be verified) — their A2P/toll-free review process is built to vet registered businesses, and a personal single-recipient tool doesn't fit that mold. Retrying with corrected info would risk hitting the same wall for the same underlying reason. Telegram's Bot API requires no business verification of any kind and delivers the same real-time push-notification experience. `src/db.py`'s `notifications` table was also updated pre-launch (no real data existed yet): `phone_number` → `recipient_id`, `twilio_sid` → `telegram_message_id`.
+
+- [x] **T-601** ~~Create a Twilio account~~ — Superseded. Create a Telegram bot via `@BotFather` instead (free, instant, no verification) — *user action*
 - [x] **T-602** Implement `src/notifier.py`: `notify_matches()` routes to individual or burst mode based on `BURST_THRESHOLD`
-- [x] **T-603** Individual SMS formatter: ≤480 chars, full URL always included, reasoning truncated with an ellipsis
-- [x] **T-603a** Burst SMS formatter: ranked by score, caps at 10 lines + overflow count, ends with a `db stats` pointer
-- [x] **T-604** Weekly digest SMS formatter: stats, top match, unresolved companies
-- [x] **T-605** `check_delivery_status()` implemented (fetches Twilio status by SID); not yet wired into a scheduled "check 2 minutes later" job
-- [x] **T-606** `send_sms_with_retry()`: one retry after a 5-minute wait, permanent failure logged
-- [x] **T-607** Phone numbers redacted to last 4 digits (`_redact_phone`) in every log call
-- [x] **T-608** Unit tests: mocked Twilio client, message formatting, phone redaction in logs
-- [ ] **T-609** Manual end-to-end test (`--dry-run` then a real SMS) — *requires a live Twilio account, user action*
+- [x] **T-603** Individual message formatter: ≤4096 chars (Telegram's limit), full URL always included, reasoning truncated with an ellipsis
+- [x] **T-603a** Burst message formatter: ranked by score, caps at 10 lines + overflow count, ends with a `db stats` pointer
+- [x] **T-604** Weekly digest message formatter: stats, top match, unresolved companies
+- [x] **T-605** ~~Twilio delivery-status polling~~ — N/A for Telegram: `sendMessage` returning `ok: true` with a `message_id` is itself the delivery confirmation; there's no separate polling endpoint to check status against, unlike Twilio's `MessageSid` lookup.
+- [x] **T-606** `send_message_with_retry()`: one retry after a 5-minute wait, permanent failure logged
+- [x] **T-607** Chat IDs redacted to last 4 characters (`_redact_chat_id`) in every log call
+- [x] **T-608** Unit tests: mocked `httpx.post` against Telegram's response shape, message formatting, chat ID redaction in logs
+- [x] **T-609** Manual end-to-end test: real bot token/chat ID set, `notifier.send_message()` confirmed delivered to phone on 2026-08-11
 
 ---
 
@@ -172,7 +174,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [ ] **T-803** Create Railway account; link to GitHub repository — *user action*
 - [ ] **T-804** Set all environment variables in Railway dashboard — *user action*
 - [ ] **T-805** Deploy to Railway; verify first run completes and logs look correct — *user action*
-- [ ] **T-806** Verify an SMS is received on your phone after the first live run — *user action*
+- [ ] **T-806** Verify a Telegram message is received after the first live run — *user action*
 - [ ] **T-807** Set up Railway persistent volume for SQLite (or switch to Postgres plugin) — *user action*
 - [ ] **T-808** Confirm Railway restarts the worker automatically after a crash — *user action*
 - [ ] **T-809** Test the `--rebuild-profile` → commit → push → Railway redeploy workflow end-to-end — *user action*
@@ -186,10 +188,10 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [x] **T-903** Covered indirectly: `upsert_deduped` primary-key check makes a second identical run a no-op (`test_upsert_deduped_same_source_id_is_duplicate`)
 - [x] **T-909** Cross-source dedup covered by `test_upsert_deduped_cross_source_same_url_is_duplicate` and `..._fuzzy_match_when_urls_differ`
 - [x] **T-904** Profile-change → re-score flow covered by `run_cycle`'s `profile_changed` branch (unit-level, not a full `--rebuild-profile` integration run)
-- [x] **T-905** `test_run_cycle_dry_run_never_calls_twilio` — dry-run completes fetch/dedupe/score but sends nothing
+- [x] **T-905** `test_run_cycle_dry_run_never_sends_notifications` — dry-run completes fetch/dedupe/score but sends nothing
 - [x] **T-906** Covered in `test_company_discoverer.py` (unresolved-company path)
 - [ ] **T-907** Nightly GitHub Actions live-API integration job — not added
-- [x] **T-908** Phone redaction verified by `test_send_sms_does_not_leak_phone_number_in_logs`; no other secrets are logged anywhere in the new code
+- [x] **T-908** Chat ID redaction verified by `test_send_message_does_not_leak_chat_id_in_logs`; no other secrets are logged anywhere in the new code
 
 ---
 
@@ -201,7 +203,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [ ] **T-1004** Adjust `profile.yaml → matching.min_score` if you're getting too many alerts (raise) or too few (lower)
 - [ ] **T-1005** Monitor Railway logs weekly for source errors or unusual API cost spikes
 - [x] **T-1006** `scripts/update_ats_map.py` fetches SimplifyJobs' live README, extracts (company, apply URL) pairs, classifies against known Greenhouse/Lever/Workday URL patterns, and adds any company not already in the bundled map (never overwrites existing entries). Run periodically: `python scripts/update_ats_map.py` (`--dry-run` to preview). Verified against the live repo: 170 postings parsed, 56 companies classified, 48 new entries available beyond the existing 446 as of this writing.
-- [ ] **T-1007** Rotate API keys every 6 months (Twilio, RapidAPI, Anthropic)
+- [ ] **T-1007** Rotate API keys every 6 months (Telegram bot token, RapidAPI, Anthropic)
 - [ ] **T-1008** Review and update custom scrapers (Google, Meta, Microsoft) if career page structure changes
 
 ---
@@ -216,7 +218,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 | 3 | T-301 – T-307 | Company discovery |
 | 4 | T-401 – T-469 | Data ingestion (9 sources + cross-source dedup) |
 | 5 | T-501 – T-508 | AI scoring (Claude) |
-| 6 | T-601 – T-609 | SMS notifications (Twilio) |
+| 6 | T-601 – T-609 | Notifications (Telegram Bot API) |
 | 7 | T-701 – T-707 | Orchestration & CLI |
 | 8 | T-801 – T-809 | Cloud deployment (Railway) |
 | 9 | T-901 – T-908 | Testing & hardening |
@@ -227,3 +229,5 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 **Status as of 2026-08-09**: Phases 0–3 and 5–7 are code-complete and tested. Phase 4 is done except Wellfound (skipped — API access closed) and the three custom Playwright scrapers (Google/Meta/Microsoft — not started). Phase 6 is code-complete; the Twilio account itself and a live manual test are still open (user action). Phase 8's config files exist; the actual Railway account/deploy steps are open (user action). Phase 9 is mostly covered by unit tests; the nightly live-API CI job is not added. 253 tests passing, 85% coverage on `src/`, mypy/ruff clean.
 
 **Update 2026-08-10**: Closed a real gap found during interview-prep code review — `config/companies.yaml` was never actually connected to `discover()`, so Tier 1 company monitoring was inert regardless of what was configured (T-307, above). Also built `scripts/update_ats_map.py` (T-1006) as a real, live-verified alternative to the never-actually-scraped SimplifyJobs claim in T-301. 282 tests passing.
+
+**Update 2026-08-11**: Pivoted notifications from Twilio SMS to the Telegram Bot API (Phase 6, above) after Twilio rejected toll-free verification — the business-verification requirement doesn't fit a personal single-recipient tool. `src/notifier.py`, `src/config.py`, `src/main.py`, and the `notifications` table schema were all updated; `SMS_CONSENT.md` was removed (it was written specifically for Twilio A2P compliance and no longer applies). 282 tests passing, `twilio` dependency fully removed.

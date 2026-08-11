@@ -20,11 +20,9 @@ class Settings(BaseSettings):
     # Required for AI features
     anthropic_api_key: str
 
-    # Required for SMS notifications — validated by the notifier at send time
-    twilio_account_sid: str | None = None
-    twilio_auth_token: str | None = None
-    twilio_from_number: str | None = None
-    alert_phone_number: str | None = None
+    # Required for notifications — validated by the notifier at send time
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
 
     # Optional API keys (scrapers are skipped when absent)
     adzuna_app_id: str | None = None

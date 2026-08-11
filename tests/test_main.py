@@ -45,10 +45,8 @@ def engine() -> Engine:
 def _settings(**overrides: object) -> Settings:
     base: dict = {
         "anthropic_api_key": "test-key",
-        "twilio_account_sid": "AC_test",
-        "twilio_auth_token": "test-token",
-        "twilio_from_number": "+15550000000",
-        "alert_phone_number": "+15551234567",
+        "telegram_bot_token": "bot-token-test",
+        "telegram_chat_id": "123456789",
         "burst_threshold": 5,
     }
     base.update(overrides)
@@ -257,13 +255,10 @@ def test_notify_and_mark_individual_mode_marks_each_posting(engine: Engine) -> N
         )
 
         fake_results = [
-            SendResult(success=True, sid="SM1", error=None),
-            SendResult(success=True, sid="SM2", error=None),
+            SendResult(success=True, message_id=1, error=None),
+            SendResult(success=True, message_id=2, error=None),
         ]
-        with (
-            patch("src.main.TwilioClient", return_value=MagicMock()),
-            patch("src.main.notify_matches", return_value=fake_results) as mock_notify,
-        ):
+        with patch("src.main.notify_matches", return_value=fake_results) as mock_notify:
             count = _notify_and_mark(session, [p1, p2], _settings(burst_threshold=5))
 
     assert count == 2
@@ -287,12 +282,9 @@ def test_notify_and_mark_burst_mode_marks_all_from_single_result(engine: Engine)
             for i in range(5)
         ]
 
-        with (
-            patch("src.main.TwilioClient", return_value=MagicMock()),
-            patch(
-                "src.main.notify_matches",
-                return_value=[SendResult(success=True, sid="SM-BURST", error=None)],
-            ),
+        with patch(
+            "src.main.notify_matches",
+            return_value=[SendResult(success=True, message_id=999, error=None)],
         ):
             count = _notify_and_mark(session, postings, _settings(burst_threshold=5))
 
@@ -307,12 +299,9 @@ def test_notify_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
     with session_scope(engine) as session:
         p1 = _stored_posting(session, external_id="1", match_score=80)
 
-        with (
-            patch("src.main.TwilioClient", return_value=MagicMock()),
-            patch(
-                "src.main.notify_matches",
-                return_value=[SendResult(success=False, sid=None, error="failed")],
-            ),
+        with patch(
+            "src.main.notify_matches",
+            return_value=[SendResult(success=False, message_id=None, error="failed")],
         ):
             count = _notify_and_mark(session, [p1], _settings(burst_threshold=5))
 
@@ -371,7 +360,7 @@ def test_run_cycle_skips_seeding_when_no_companies_configured(
     mock_seed.assert_not_called()
 
 
-def test_run_cycle_dry_run_never_calls_twilio(
+def test_run_cycle_dry_run_never_sends_notifications(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -384,11 +373,11 @@ def test_run_cycle_dry_run_never_calls_twilio(
         session_scope(engine) as session,
         patch("src.main._SOURCES", [("greenhouse", source)]),
         patch("src.main.score_postings", return_value=fake_score),
-        patch("src.main.TwilioClient") as mock_twilio,
+        patch("src.main.notify_matches") as mock_notify,
     ):
         summary = run_cycle(session, _settings(), dry_run=True)
 
-    mock_twilio.assert_not_called()
+    mock_notify.assert_not_called()
     assert summary["postings_new"] == 1
     assert summary["alerts_sent"] == 0
 
@@ -422,10 +411,9 @@ def test_run_cycle_sends_alerts_for_matches_above_threshold(
         session_scope(engine) as session,
         patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
         patch("src.main.score_postings", return_value=fake_score),
-        patch("src.main.TwilioClient", return_value=MagicMock()),
         patch(
             "src.main.notify_matches",
-            return_value=[SendResult(success=True, sid="SM1", error=None)],
+            return_value=[SendResult(success=True, message_id=1, error=None)],
         ) as mock_notify,
     ):
         summary = run_cycle(session, _settings(), dry_run=False)
@@ -497,7 +485,7 @@ def test_run_weekly_digest_skipped_when_disabled(
     mock_retry.assert_not_called()
 
 
-def test_run_weekly_digest_sends_summary_sms(
+def test_run_weekly_digest_sends_summary_message(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -509,11 +497,10 @@ def test_run_weekly_digest_sends_summary_sms(
             "src.main.retry_unresolved",
             return_value=RetryResult(attempted=2, resolved=1, still_unresolved=1),
         ),
-        patch("src.main.TwilioClient", return_value=MagicMock()),
-        patch("src.main.send_sms_with_retry") as mock_send,
+        patch("src.main.send_message_with_retry") as mock_send,
     ):
         run_weekly_digest(session, _settings())
 
     mock_send.assert_called_once()
-    body = mock_send.call_args.args[3]
+    body = mock_send.call_args.args[2]
     assert "Weekly Summary" in body

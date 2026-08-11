@@ -14,7 +14,7 @@ sqlalchemy>=2.0.0
 alembic>=1.13.0
 
 # ── Notifications ─────────────────────────────────────────────────────────────
-twilio>=9.0.0
+# Telegram Bot API — plain HTTP via httpx above, no dedicated SDK needed.
 
 # ── Scheduling ────────────────────────────────────────────────────────────────
 apscheduler>=3.10.0

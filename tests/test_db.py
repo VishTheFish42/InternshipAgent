@@ -310,7 +310,7 @@ def test_mark_notified_sets_flags(engine: Engine) -> None:
         pid = p.id
 
     with session_scope(engine) as s:
-        mark_notified(s, pid, "+15550001234", "Test SMS")
+        mark_notified(s, pid, "123456789", "Test message")
 
     with session_scope(engine) as s:
         posting = s.get(JobPosting, pid)
@@ -325,9 +325,9 @@ def test_mark_notified_creates_notification_record(engine: Engine) -> None:
         pid = p.id
 
     with session_scope(engine) as s:
-        notif = mark_notified(s, pid, "+15550001234", "Test SMS", twilio_sid="SM999")
+        notif = mark_notified(s, pid, "123456789", "Test message", telegram_message_id="999")
 
-    assert notif.twilio_sid == "SM999"
+    assert notif.telegram_message_id == "999"
     assert notif.delivery_status == "sent"
     assert notif.job_posting_id == pid
 
@@ -338,18 +338,18 @@ def test_mark_notified_creates_notification_record(engine: Engine) -> None:
 
 def test_mark_notified_raises_for_missing_posting(engine: Engine) -> None:
     with pytest.raises(ValueError, match="not found"), session_scope(engine) as s:
-        mark_notified(s, 99999, "+15550001234", "Test SMS")
+        mark_notified(s, 99999, "123456789", "Test message")
 
 
-def test_mark_notified_phone_stored_as_given(engine: Engine) -> None:
+def test_mark_notified_recipient_id_stored_as_given(engine: Engine) -> None:
     with session_scope(engine) as s:
         p, _ = upsert_posting(s, _posting_data())
         pid = p.id
 
     with session_scope(engine) as s:
-        notif = mark_notified(s, pid, "+15559876543", "msg")
+        notif = mark_notified(s, pid, "987654321", "msg")
 
-    assert notif.phone_number == "+15559876543"
+    assert notif.recipient_id == "987654321"
 
 
 # ── log_run ───────────────────────────────────────────────────────────────────
