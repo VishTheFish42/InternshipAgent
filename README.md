@@ -81,7 +81,7 @@ python -m src.db init
 # 9. Run once to verify everything works
 python -m src.main --run-once --dry-run
 
-# 10. Start the scheduler (runs every 30 minutes)
+# 10. Start the scheduler (runs every 60 minutes)
 python -m src.main
 ```
 
@@ -132,7 +132,7 @@ preferences:
 
 matching:
   min_score: 70        # 0–100; only alert if Claude scores >= this
-  weekly_digest: true  # send a weekly summary message (Sunday 9am) in addition to real-time alerts
+  digest_enabled: true # send a summary message every hour in addition to real-time alerts
 ```
 
 ## Adding companies to monitor
@@ -158,7 +158,7 @@ python -m src.db stats
 # Shows: postings found/scored/alerted, unresolved companies (by name), estimated API cost
 ```
 
-Unresolved companies are also included in your weekly digest message.
+Unresolved companies are also included in your hourly digest message.
 
 ## How the agent covers companies you haven't listed
 
@@ -187,13 +187,13 @@ See `.env.example` for all required variables. Key ones:
 | `ADZUNA_APP_KEY` | Adzuna API key |
 | `SEARCH_API_KEY` | SerpAPI key — used only for company ATS discovery, not job searching |
 | `DATABASE_URL` | SQLite path or Postgres URL |
-| `RUN_INTERVAL_MINUTES` | How often to poll (default: `30`) |
+| `RUN_INTERVAL_MINUTES` | How often to poll (default: `60`) |
 | `BURST_THRESHOLD` | Min matches in one cycle to trigger a batched message instead of individual ones (default: `5`) |
 
 ## CLI reference
 
 ```bash
-python -m src.main                      # start scheduler (runs every 30 min)
+python -m src.main                      # start scheduler (runs every 60 min)
 python -m src.main --run-once           # single run, then exit
 python -m src.main --dry-run            # full pipeline but no message sent
 python -m src.main --rebuild-profile    # re-extract profile from /resumes PDFs

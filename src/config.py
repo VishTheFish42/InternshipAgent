@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./internship_agent.db"
 
     # Scheduler
-    run_interval_minutes: int = 30
+    run_interval_minutes: int = 60
 
     # Notifications
     burst_threshold: int = 5

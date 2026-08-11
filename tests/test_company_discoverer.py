@@ -265,7 +265,7 @@ def test_retry_no_candidates(session):
 def test_retry_skips_resolved_companies(session):
     discover("Stripe", session)
     session.commit()
-    result = retry_unresolved(session, min_age_days=0)
+    result = retry_unresolved(session, min_age_hours=0)
     assert result.attempted == 0
 
 
@@ -273,17 +273,17 @@ def test_retry_skips_recently_attempted(session):
     session.add(_unresolved_row("Fresh Corp", last_attempted=_now()))
     session.commit()
     with patch("src.company_discoverer._serpapi", return_value=[]) as mock_search:
-        result = retry_unresolved(session, search_api_key="k", min_age_days=7)
+        result = retry_unresolved(session, search_api_key="k", min_age_hours=1)
     mock_search.assert_not_called()
     assert result.attempted == 0
 
 
 def test_retry_attempts_stale_company(session):
-    stale_time = _now() - timedelta(days=8)
+    stale_time = _now() - timedelta(hours=2)
     session.add(_unresolved_row("Stale Corp", last_attempted=stale_time))
     session.commit()
     with patch("src.company_discoverer._serpapi", return_value=[]):
-        result = retry_unresolved(session, search_api_key="k", min_age_days=7)
+        result = retry_unresolved(session, search_api_key="k", min_age_hours=1)
     assert result.attempted == 1
     assert result.resolved == 0
     assert result.still_unresolved == 1
@@ -344,12 +344,12 @@ def test_retry_mixed_results(session):
     assert result.still_unresolved == 1
 
 
-def test_retry_min_age_days_zero_includes_all_unresolved(session):
+def test_retry_min_age_hours_zero_includes_all_unresolved(session):
     session.add(_unresolved_row("Corp A", last_attempted=_now()))
-    session.add(_unresolved_row("Corp B", last_attempted=_now() - timedelta(days=1)))
+    session.add(_unresolved_row("Corp B", last_attempted=_now() - timedelta(minutes=30)))
     session.commit()
     with patch("src.company_discoverer._serpapi", return_value=[]):
-        result = retry_unresolved(session, search_api_key="k", min_age_days=0)
+        result = retry_unresolved(session, search_api_key="k", min_age_hours=0)
     assert result.attempted == 2
 
 

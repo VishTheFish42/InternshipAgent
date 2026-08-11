@@ -15,17 +15,16 @@ from typing import Any
 
 import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.company_discoverer import retry_unresolved, seed_companies
 from src.config import Settings, get_settings
 from src.db import (
     JobPosting,
+    Notification,
     get_last_run_log,
-    get_stats,
     get_unnotified_above_threshold,
     get_unnotified_postings,
     get_unresolved_companies,
@@ -41,13 +40,13 @@ from src.matcher import ScoringResult, hash_profile, score_postings
 from src.notifier import (
     MatchInfo,
     format_burst_message,
+    format_digest,
     format_individual_message,
-    format_weekly_digest,
     notify_matches,
     send_message_with_retry,
 )
 from src.resume_extractor import rebuild_profile
-from src.scrapers import greenhouse, hn, indeed_rss, lever, remoteok
+from src.scrapers import adzuna, greenhouse, hn, indeed_rss, lever, remoteok
 from src.scrapers.base import RawPosting
 
 _RESUMES_DIR = Path("resumes")
@@ -55,10 +54,11 @@ _PROFILE_YAML = Path("profile.yaml")
 _COMPANIES_YAML = Path("config/companies.yaml")
 _log = logging.getLogger(__name__)
 
-# Every registered Tier 1/2 source. Tier 1 (ATS) fetchers take the DB session
-# to look up resolved companies; Tier 2 (broad search) fetchers ignore it.
-# Remaining broad sources (Adzuna, YC, Dice) are appended here as they're
-# implemented.
+# Every registered Tier 1/2 source polled on the *main* cycle. Adzuna is
+# deliberately excluded here and polled on its own weekly job instead
+# (run_adzuna_poll, below) — its free tier is 250 calls/month, which the main
+# cycle's hourly interval would exhaust in under two weeks. YC and Dice are
+# not yet wired into either schedule.
 _SOURCES: list[tuple[str, Callable[[Session], list[RawPosting]]]] = [
     ("greenhouse", greenhouse.fetch_for_resolved_companies),
     ("lever", lever.fetch_for_resolved_companies),
@@ -298,30 +298,58 @@ def _get_top_match_this_week(session: Session) -> JobPosting | None:
     ).scalar_one_or_none()
 
 
-def run_weekly_digest(session: Session, settings: Settings) -> None:
-    """Re-attempt unresolved companies and send the weekly summary message."""
+def _get_period_stats(session: Session, since: datetime) -> tuple[int, int]:
+    """Postings found and alerts sent since `since` — used for the digest's
+    per-period counts, distinct from get_stats()'s all-time totals."""
+    postings_found = session.execute(
+        select(func.count()).select_from(JobPosting).where(JobPosting.found_at >= since)
+    ).scalar_one()
+    alerts_sent = session.execute(
+        select(func.count()).select_from(Notification).where(Notification.sent_at >= since)
+    ).scalar_one()
+    return postings_found, alerts_sent
+
+
+def run_digest(session: Session, settings: Settings) -> None:
+    """Re-attempt unresolved companies and send the periodic summary message."""
     config = _load_yaml_config()
-    if not config.get("matching", {}).get("weekly_digest", True):
+    if not config.get("matching", {}).get("digest_enabled", True):
         return
 
-    retry_result = retry_unresolved(session, settings.search_api_key)
+    retry_result = retry_unresolved(session, settings.search_api_key, min_age_hours=1)
     _log.info(
-        "Weekly re-attempt: %d attempted, %d resolved",
+        "Digest re-attempt: %d attempted, %d resolved",
         retry_result.attempted,
         retry_result.resolved,
     )
 
-    stats = get_stats(session)
+    postings_found, alerts_sent = _get_period_stats(session, _now() - timedelta(hours=1))
     unresolved = [c.name_raw for c in get_unresolved_companies(session)]
     top_posting = _get_top_match_this_week(session)
     top_match = _to_match_info(top_posting) if top_posting else None
 
-    body = format_weekly_digest(
-        _now().strftime("%a %b %-d"), stats.total_postings, stats.alerts_sent, top_match, unresolved
+    body = format_digest(
+        _now().strftime("%a %b %-d %I:%M%p"), postings_found, alerts_sent, top_match, unresolved
     )
 
     if settings.telegram_bot_token and settings.telegram_chat_id:
         send_message_with_retry(settings.telegram_bot_token, settings.telegram_chat_id, body)
+
+
+def run_adzuna_poll(session: Session, settings: Settings) -> None:
+    """
+    Poll Adzuna on its own weekly job, deliberately separate from the main
+    cycle — its free tier is 250 calls/month, and this makes one call per
+    week (~4/month), leaving headroom. New postings are stored unscored;
+    the next main cycle picks them up for scoring like any other source.
+    """
+    if not (settings.adzuna_app_id and settings.adzuna_app_key):
+        _log.info("Adzuna poll skipped: ADZUNA_APP_ID/ADZUNA_APP_KEY not configured")
+        return
+
+    postings = adzuna.fetch(settings.adzuna_app_id, settings.adzuna_app_key)
+    new_count = _dedupe_and_store(session, postings)
+    _log.info("Adzuna poll: %d found, %d new", len(postings), new_count)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -403,14 +431,19 @@ def main() -> None:
 
     def _scheduled_digest() -> None:
         with session_scope(engine) as session:
-            run_weekly_digest(session, settings)
+            run_digest(session, settings)
+
+    def _scheduled_adzuna() -> None:
+        with session_scope(engine) as session:
+            run_adzuna_poll(session, settings)
 
     scheduler.add_job(
         _scheduled_cycle,
         IntervalTrigger(minutes=settings.run_interval_minutes),
         max_instances=1,
     )
-    scheduler.add_job(_scheduled_digest, CronTrigger(day_of_week="sun", hour=9))
+    scheduler.add_job(_scheduled_digest, IntervalTrigger(hours=1), max_instances=1)
+    scheduler.add_job(_scheduled_adzuna, IntervalTrigger(weeks=1), max_instances=1)
 
     def _shutdown(signum: int, _frame: FrameType | None) -> None:
         _log.info("Received signal %d — shutting down after current cycle", signum)

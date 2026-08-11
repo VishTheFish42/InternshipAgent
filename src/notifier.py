@@ -94,17 +94,17 @@ def format_burst_message(matches: list[MatchInfo]) -> str:
     return "\n".join(lines)
 
 
-def format_weekly_digest(
-    week_label: str,
+def format_digest(
+    period_label: str,
     postings_found: int,
     alerts_sent: int,
     top_match: MatchInfo | None,
     unresolved_companies: list[str],
 ) -> str:
-    """Format the weekly digest message: stats, top match, and unresolved companies."""
+    """Format the periodic digest message: stats, top match, and unresolved companies."""
     lines = [
-        f"[{_APP_NAME}] Weekly Summary — {week_label}",
-        f"This week: {postings_found} new postings, {alerts_sent} alerts sent",
+        f"[{_APP_NAME}] Digest — {period_label}",
+        f"In the last hour: {postings_found} new postings, {alerts_sent} alerts sent",
     ]
     if top_match:
         lines.append(f"Top match: {top_match.company} {top_match.title} ({top_match.score}/100)")

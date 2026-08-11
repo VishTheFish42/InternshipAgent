@@ -7,4 +7,4 @@ preferences:
 
 matching:
   min_score: 70        # 0–100; only alert if Claude scores >= this
-  weekly_digest: true   # send a weekly SMS summary (Sunday 9am) in addition to real-time alerts
+  digest_enabled: true  # send a summary message every hour in addition to real-time alerts

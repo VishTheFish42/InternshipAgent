@@ -21,7 +21,7 @@
 | FR-08 | The company discovery pipeline SHALL resolve company names to career pages by checking, in order: (1) a bundled lookup table of known companies, (2) a web search for the company's Greenhouse or Lever board, (3) a web search for the company's generic careers page. |
 | FR-09 | Resolved company → ATS mappings SHALL be cached in the database so that web search is only performed once per company. |
 | FR-10 | If a company cannot be resolved after all discovery steps, the system SHALL mark it as `unresolved` in the database and log a warning. It SHALL NOT send an error message for each individual unresolved company. |
-| FR-11 | Unresolved companies SHALL be surfaced to the user via: (a) the `python -m src.db stats` command, and (b) the weekly digest message (count + names). |
+| FR-11 | Unresolved companies SHALL be surfaced to the user via: (a) the `python -m src.db stats` command, and (b) the hourly digest message (count + names). |
 | FR-12 | The system SHALL re-attempt discovery for unresolved companies once per week in case the company has since added a public career page. |
 
 ### 1.3 Resume-Based Profile
@@ -64,7 +64,7 @@
 | FR-30 | The system SHALL send a Telegram message to the configured chat when a posting meets the match threshold. |
 | FR-30a | If the number of qualifying matches in a single polling cycle is below `BURST_THRESHOLD` (default: 5), the system SHALL send one individual message per match. If at or above the threshold, it SHALL send a single batched summary message listing all matches ranked by score, with a note to check `db stats` for details. |
 | FR-31 | Each individual message SHALL contain: company name, role title, location/remote status, match score, and direct application URL. |
-| FR-32 | The system SHALL send a weekly digest message (configurable day/time, default: Sunday 9am) containing: number of new postings found, number of alerts sent, and names of unresolved companies. |
+| FR-32 | The system SHALL send a digest message on a configurable interval (default: every hour) containing: number of new postings found and alerts sent since the last digest, and names of unresolved companies. |
 | FR-33 | The digest message is in addition to real-time alerts, not a replacement. |
 | FR-34 | All sent notifications SHALL be logged with timestamp and Telegram message ID. |
 
@@ -72,7 +72,7 @@
 
 | ID | Requirement |
 |---|---|
-| FR-35 | The system SHALL poll all sources on a configurable interval (default: 30 minutes). |
+| FR-35 | The system SHALL poll all sources on a configurable interval (default: 60 minutes). |
 | FR-36 | `--run-once`: execute a single full cycle and exit. |
 | FR-37 | `--dry-run`: full pipeline without sending any notification. |
 | FR-38 | `--rebuild-profile`: re-extract profile from all resume PDFs and exit. |
@@ -90,7 +90,7 @@
 |---|---|
 | NFR-01 | A failure in one data source SHALL NOT prevent other sources from completing in the same run. |
 | NFR-02 | Failed API calls SHALL be retried up to 3 times with exponential back-off before marking the source as failed for that run. |
-| NFR-03 | If any source fails for 3 or more consecutive runs, the system SHALL include it in the next weekly digest message. |
+| NFR-03 | If any source fails for 3 or more consecutive runs, the system SHALL include it in the next digest message. |
 | NFR-04 | The system SHALL resume correctly after process restart without sending duplicate notifications. |
 
 ### 2.2 Performance

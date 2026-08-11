@@ -13,7 +13,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [x] **T-005** Add `.gitignore`: `.env`, `resumes/`, `profile.cache.json`, `config/companies.yaml`, `*.db`, `__pycache__`, `.venv`, `playwright/`
 - [x] **T-006** Set up `pyproject.toml` with `mypy`, `pytest`, and `ruff` config
 - [x] **T-007** Set up GitHub Actions CI: run `mypy`, `ruff`, and `pytest` on every push to main
-- [x] **T-008** Create `profile.yaml` with default preferences (empty `keywords_excluded`, `min_score: 70`, `weekly_digest: true`)
+- [x] **T-008** Create `profile.yaml` with default preferences (empty `keywords_excluded`, `min_score: 70`, `digest_enabled: true`)
 - [x] **T-009** Create `config/companies.example.yaml` (committed format reference); verify `config/companies.yaml` (pre-populated with ~150 companies) is in `.gitignore` and not committed
 
 ---
@@ -48,7 +48,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [x] **T-302** Implement `src/company_discoverer.py`: `discover(company_name: str) -> CompanyRecord | None` following the 4-step pipeline (bundled table → Greenhouse web search → Lever web search → generic careers search → unresolved)
 - [x] **T-303** Implement web search step using SerpAPI or Google Custom Search; extract ATS slug from first matching URL using regex
 - [x] **T-304** Implement DB caching for resolved companies: never re-query a company that has already been resolved; store resolution source (`bundled_table`, `web_search`, `manual`)
-- [x] **T-305** Implement weekly re-attempt for unresolved companies (in the weekly digest job)
+- [x] **T-305** Implement hourly re-attempt for unresolved companies (in the digest job; 1-hour per-company cooldown via `retry_unresolved(min_age_hours=1)`)
 - [x] **T-306** Write unit tests for company discoverer: mock web search; test each discovery step in isolation; test caching behavior
 - [x] **T-307** *(added)* `seed_companies()` in `src/company_discoverer.py`, wired into `run_cycle()` in `src/main.py`: reads `config/companies.yaml` and calls `discover()` once for any company with no existing `company_lookup` row. This was a real gap found during a code walkthrough — `discover()`/`retry_unresolved()` existed and were tested, but nothing ever actually read the user's plain-English company list and triggered discovery on it, so Tier 1 monitoring silently did nothing regardless of what was in `companies.yaml`.
 
@@ -71,9 +71,9 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 ### 4C — Adzuna
 
-- [ ] **T-421** Create an Adzuna developer account; obtain `app_id` and `app_key` — *user action, keys not yet in `.env`*
-- [x] **T-422** Implement `src/scrapers/adzuna.py`: single broad query (not looped per keyword — free tier is 250 calls/month); filter `where=us`, `sort_by=date`. *Not wired into `main.py`'s `_SOURCES` yet — needs a slower poll cadence than the 30-min main cycle to stay in quota; decide on scheduling before enabling.*
-- [x] **T-423** Unit tests with mocked HTTP responses
+- [x] **T-421** Adzuna developer account created; `app_id`/`app_key` in `.env`
+- [x] **T-422** Implement `src/scrapers/adzuna.py`: single broad query (not looped per keyword — free tier is 250 calls/month); filter `where=us`, `sort_by=date`. Wired in via `run_adzuna_poll()` in `src/main.py`, scheduled on its own `IntervalTrigger(weeks=1)` — separate from the main `_SOURCES` cycle, deliberately, to stay in quota (~4 calls/month vs. a 250/month cap). New postings are stored unscored and picked up by the next main cycle like any other source.
+- [x] **T-423** Unit tests with mocked HTTP responses, plus `run_adzuna_poll()` orchestration tests in `test_main.py`
 
 ### 4D — Wellfound / AngelList (startup coverage)
 
@@ -146,7 +146,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 - [x] **T-602** Implement `src/notifier.py`: `notify_matches()` routes to individual or burst mode based on `BURST_THRESHOLD`
 - [x] **T-603** Individual message formatter: ≤4096 chars (Telegram's limit), full URL always included, reasoning truncated with an ellipsis
 - [x] **T-603a** Burst message formatter: ranked by score, caps at 10 lines + overflow count, ends with a `db stats` pointer
-- [x] **T-604** Weekly digest message formatter: stats, top match, unresolved companies
+- [x] **T-604** Digest message formatter: last-hour stats, top match, unresolved companies
 - [x] **T-605** ~~Twilio delivery-status polling~~ — N/A for Telegram: `sendMessage` returning `ok: true` with a `message_id` is itself the delivery confirmation; there's no separate polling endpoint to check status against, unlike Twilio's `MessageSid` lookup.
 - [x] **T-606** `send_message_with_retry()`: one retry after a 5-minute wait, permanent failure logged
 - [x] **T-607** Chat IDs redacted to last 4 characters (`_redact_chat_id`) in every log call
@@ -159,7 +159,7 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 - [x] **T-701** `src/main.py`: `--run-once`, `--dry-run`, `--rebuild-profile`, `--rescore` CLI flags
 - [x] **T-702** `run_cycle()`: fetch → dedupe → score → notify → log. *Sources are polled sequentially, not in parallel — acceptable at the current source count; revisit with `concurrent.futures` if the source list grows.*
-- [x] **T-703** APScheduler: `IntervalTrigger` for the main cycle, `CronTrigger(day_of_week="sun", hour=9)` for the weekly digest
+- [x] **T-703** APScheduler: `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default 60) for the main cycle, `IntervalTrigger(hours=1)` for the digest — changed from the original weekly `CronTrigger(day_of_week="sun", hour=9)` per explicit request (2026-08-11)
 - [x] **T-704** Graceful shutdown on `SIGTERM`/`SIGINT` via `scheduler.shutdown(wait=True)`
 - [x] **T-705** `--rescore` mode: re-scores all `notified=FALSE` postings against the current profile
 - [x] **T-706** Profile-change detection triggers a re-score of unnotified postings on the next cycle (see T-505)
@@ -230,4 +230,6 @@ Check off tasks as they are completed. Phases are ordered by dependency — comp
 
 **Update 2026-08-10**: Closed a real gap found during interview-prep code review — `config/companies.yaml` was never actually connected to `discover()`, so Tier 1 company monitoring was inert regardless of what was configured (T-307, above). Also built `scripts/update_ats_map.py` (T-1006) as a real, live-verified alternative to the never-actually-scraped SimplifyJobs claim in T-301. 282 tests passing.
 
-**Update 2026-08-11**: Pivoted notifications from Twilio SMS to the Telegram Bot API (Phase 6, above) after Twilio rejected toll-free verification — the business-verification requirement doesn't fit a personal single-recipient tool. `src/notifier.py`, `src/config.py`, `src/main.py`, and the `notifications` table schema were all updated; `SMS_CONSENT.md` was removed (it was written specifically for Twilio A2P compliance and no longer applies). 282 tests passing, `twilio` dependency fully removed.
+**Update 2026-08-11**: Pivoted notifications from Twilio SMS to the Telegram Bot API (Phase 6, above) after Twilio rejected toll-free verification — the business-verification requirement doesn't fit a personal single-recipient tool. `src/notifier.py`, `src/config.py`, `src/main.py`, and the `notifications` table schema were all updated; `SMS_CONSENT.md` was removed (it was written specifically for Twilio A2P compliance and no longer applies). Verified end-to-end: a real Telegram message was sent and confirmed delivered. 282 tests passing, `twilio` dependency fully removed.
+
+**Update 2026-08-11 (later same day)**: Per explicit request — main poll cycle changed from every 30 to every 60 minutes (`RUN_INTERVAL_MINUTES` default); the digest job changed from a weekly `CronTrigger(day_of_week="sun", hour=9)` to an hourly `IntervalTrigger(hours=1)`, and `retry_unresolved()`'s per-company cooldown changed from `min_age_days=7` to `min_age_hours=1` to match (T-305, T-604, T-703, above; `format_weekly_digest`→`format_digest`, `run_weekly_digest`→`run_digest`, `weekly_digest`→`digest_enabled` config key). Digest stats are now scoped to the last hour instead of `get_stats()`'s all-time totals, via a new `_get_period_stats()` helper. Also wired Adzuna into the scheduler on its own `IntervalTrigger(weeks=1)` job (`run_adzuna_poll()`, T-421–T-423, above) — separate from the main cycle to respect its 250-calls/month free tier. 286 tests passing, 85% coverage, mypy/ruff clean.

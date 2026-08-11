@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +14,7 @@ from src.config import Settings
 from src.db import (
     JobPosting,
     init_db,
+    mark_notified,
     session_scope,
     upsert_posting,
 )
@@ -27,8 +28,9 @@ from src.main import (
     _score_and_record,
     _to_match_info,
     _to_scoring_posting,
+    run_adzuna_poll,
     run_cycle,
-    run_weekly_digest,
+    run_digest,
 )
 from src.matcher import ScoredPosting, ScoringResult
 from src.notifier import SendResult
@@ -467,29 +469,29 @@ def test_get_top_match_this_week_none_when_empty(engine: Engine) -> None:
         assert _get_top_match_this_week(session) is None
 
 
-# ── run_weekly_digest ─────────────────────────────────────────────────────────
+# ── run_digest ────────────────────────────────────────────────────────────────
 
 
-def test_run_weekly_digest_skipped_when_disabled(
+def test_run_digest_skipped_when_disabled(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  weekly_digest: false\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: false\n", encoding="utf-8")
 
     with (
         session_scope(engine) as session,
         patch("src.main.retry_unresolved") as mock_retry,
     ):
-        run_weekly_digest(session, _settings())
+        run_digest(session, _settings())
 
     mock_retry.assert_not_called()
 
 
-def test_run_weekly_digest_sends_summary_message(
+def test_run_digest_sends_summary_message(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  weekly_digest: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
     with (
         session_scope(engine) as session,
@@ -499,8 +501,102 @@ def test_run_weekly_digest_sends_summary_message(
         ),
         patch("src.main.send_message_with_retry") as mock_send,
     ):
-        run_weekly_digest(session, _settings())
+        run_digest(session, _settings())
 
     mock_send.assert_called_once()
     body = mock_send.call_args.args[2]
-    assert "Weekly Summary" in body
+    assert "Digest" in body
+
+
+# ── run_adzuna_poll ────────────────────────────────────────────────────────────
+
+
+def test_run_adzuna_poll_skipped_without_credentials(engine: Engine) -> None:
+    with (
+        session_scope(engine) as session,
+        patch("src.main.adzuna.fetch") as mock_fetch,
+    ):
+        run_adzuna_poll(session, _settings(adzuna_app_id=None, adzuna_app_key=None))
+
+    mock_fetch.assert_not_called()
+
+
+def test_run_adzuna_poll_fetches_and_stores(engine: Engine) -> None:
+    postings = [_raw_posting(source="adzuna", external_id="1")]
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.adzuna.fetch", return_value=postings) as mock_fetch,
+    ):
+        run_adzuna_poll(session, _settings(adzuna_app_id="app-id", adzuna_app_key="app-key"))
+
+    mock_fetch.assert_called_once_with("app-id", "app-key")
+    with session_scope(engine) as session:
+        assert session.query(JobPosting).count() == 1
+
+
+def test_run_digest_counts_only_recent_postings(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest now runs hourly, so its 'new postings' count must be scoped
+    to postings found in the last hour, not get_stats()'s all-time total."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+
+    with session_scope(engine) as session:
+        _stored_posting(
+            session,
+            external_id="old",
+            apply_url="https://boards.greenhouse.io/stripe/jobs/old",
+            found_at=_now() - timedelta(days=2),
+        )
+        _stored_posting(
+            session,
+            external_id="recent",
+            apply_url="https://boards.greenhouse.io/stripe/jobs/recent",
+            found_at=_now(),
+        )
+
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
+        ),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        run_digest(session, _settings())
+
+    body = mock_send.call_args.args[2]
+    assert "1 new postings" in body
+
+
+def test_run_digest_counts_alerts_by_when_sent_not_when_found(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An alert for an old posting still counts toward this period's
+    alerts-sent total if it was actually sent within the window."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+
+    with session_scope(engine) as session:
+        old = _stored_posting(
+            session,
+            external_id="old",
+            apply_url="https://boards.greenhouse.io/stripe/jobs/old",
+            found_at=_now() - timedelta(days=2),
+        )
+        mark_notified(session, old.id, "123", "old alert")
+
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
+        ),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        run_digest(session, _settings())
+
+    body = mock_send.call_args.args[2]
+    assert "1 alerts sent" in body

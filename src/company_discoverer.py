@@ -263,14 +263,14 @@ def retry_unresolved(
     session: Session,
     search_api_key: str | None = None,
     *,
-    min_age_days: int = 7,
+    min_age_hours: int = 1,
 ) -> RetryResult:
     """
     Re-attempt discovery for all unresolved companies not tried in the last
-    min_age_days days. Intended to be called from the weekly digest job (T-703).
+    min_age_hours hours. Intended to be called from the hourly digest job (T-703).
     Returns counts of how many were attempted and how many resolved.
     """
-    cutoff = _now() - timedelta(days=min_age_days)
+    cutoff = _now() - timedelta(hours=min_age_hours)
     rows = list(
         session.execute(
             select(CompanyLookup).where(

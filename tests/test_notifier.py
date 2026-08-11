@@ -9,8 +9,8 @@ from src.notifier import (
     MatchInfo,
     _redact_chat_id,
     format_burst_message,
+    format_digest,
     format_individual_message,
-    format_weekly_digest,
     notify_matches,
     send_message,
     send_message_with_retry,
@@ -139,30 +139,30 @@ def test_format_burst_message_no_overflow_note_when_under_cap():
     assert "more" not in body
 
 
-# ── format_weekly_digest ──────────────────────────────────────────────────────
+# ── format_digest ──────────────────────────────────────────────────────────────
 
 
-def test_format_weekly_digest_includes_stats():
-    body = format_weekly_digest("Sun May 10", 47, 6, _match(score=92), [])
+def test_format_digest_includes_stats():
+    body = format_digest("Sun May 10 3:00PM", 47, 6, _match(score=92), [])
     assert "47 new postings" in body
     assert "6 alerts sent" in body
     assert "92/100" in body
 
 
-def test_format_weekly_digest_includes_unresolved_companies():
-    body = format_weekly_digest("Sun May 10", 47, 6, None, ["Acme Corp", "Widgets Inc"])
+def test_format_digest_includes_unresolved_companies():
+    body = format_digest("Sun May 10 3:00PM", 47, 6, None, ["Acme Corp", "Widgets Inc"])
     assert "Acme Corp" in body
     assert "Widgets Inc" in body
     assert "⚠" in body
 
 
-def test_format_weekly_digest_omits_unresolved_section_when_empty():
-    body = format_weekly_digest("Sun May 10", 47, 6, None, [])
+def test_format_digest_omits_unresolved_section_when_empty():
+    body = format_digest("Sun May 10 3:00PM", 47, 6, None, [])
     assert "⚠" not in body
 
 
-def test_format_weekly_digest_omits_top_match_when_none():
-    body = format_weekly_digest("Sun May 10", 47, 6, None, [])
+def test_format_digest_omits_top_match_when_none():
+    body = format_digest("Sun May 10 3:00PM", 47, 6, None, [])
     assert "Top match" not in body
 
 

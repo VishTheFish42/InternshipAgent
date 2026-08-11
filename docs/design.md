@@ -157,8 +157,8 @@ Step 3: Web search "{company} careers internship site:careers.{company}.com"
    │  hit → store custom URL in DB, flag for custom scraper
    │  miss ↓
    ▼
-Step 4: Mark as "unresolved" in DB; include in weekly digest message
-        Re-attempt weekly
+Step 4: Mark as "unresolved" in DB; include in hourly digest message
+        Re-attempted every hour (subject to a 1-hour per-company cooldown)
 ```
 
 ### 3.2 Bundled lookup table
@@ -184,7 +184,7 @@ Uses the SerpAPI or Google Custom Search API. Query: `"{company name}" internshi
 
 Unresolved companies are surfaced in two ways:
 1. `python -m src.db stats` prints a section: `Unresolved companies (N): [list]`
-2. The weekly digest message includes: `⚠ Could not find career pages for: Acme Corp, Widgets Inc`
+2. The hourly digest message includes: `⚠ Could not find career pages for: Acme Corp, Widgets Inc`
 
 ---
 
@@ -526,14 +526,16 @@ Apply: https://boards.greenhouse.io/stripe/jobs/123456
 
 Targets ≤4096 chars (Telegram's hard per-message limit — generous compared to SMS's per-segment cost, so truncation is a rare edge case rather than the norm). URL is always included verbatim; reasoning is truncated if needed.
 
-### 9.3 Weekly digest message format
+### 9.3 Digest message format
 
 ```
-[InternAgent] Weekly Summary — Sun May 10
-This week: 47 new postings, 6 alerts sent
+[InternAgent] Digest — Sun May 10 3:00PM
+In the last hour: 3 new postings, 1 alerts sent
 Top match: Stripe SWE Intern (92/100)
 ⚠ Not found: Acme Corp, Widgets Inc
 ```
+
+"New postings" and "alerts sent" are scoped to the last hour (matching the digest's own cadence) — not `db stats`' all-time totals. "Top match" still looks back 7 days, independent of digest cadence, since "best match in the last hour" would rarely have anything to show.
 
 ### 9.4 Telegram delivery
 
@@ -548,9 +550,9 @@ Top match: Stripe SWE Intern (92/100)
 
 ### 10.1 Scheduler
 
-- `APScheduler` with `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default: 30)
+- `APScheduler` with `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default: 60)
 - `max_instances=1` prevents overlapping runs
-- Weekly digest sent via a separate `CronTrigger(day_of_week='sun', hour=9)`
+- Digest (unresolved-company retry + summary message) sent via a separate `IntervalTrigger(hours=1)`, also `max_instances=1`
 
 ### 10.2 Run lifecycle
 
@@ -574,11 +576,11 @@ each scheduled run:
   └── check if profile hash changed → trigger re-score pass
   └── write run_log entry (JSON)
 
-weekly (Sunday 9am):
-  └── compile weekly stats
+every hour (separate job):
+  └── re-attempt discovery for unresolved companies (1-hour per-company cooldown)
+  └── compile last-hour stats (postings found, alerts sent)
   └── fetch unresolved companies list
   └── send digest message
-  └── re-attempt discovery for unresolved companies
 ```
 
 ---
