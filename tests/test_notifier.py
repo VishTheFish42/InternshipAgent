@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from src.notifier import (
     MatchInfo,
+    _friendly_source,
     _redact_chat_id,
     answer_callback_query,
     applied_button,
@@ -29,6 +30,7 @@ def _match(
     score=88,
     missing=None,
     posting_id=1,
+    source="",
 ):
     return MatchInfo(
         company=company,
@@ -39,6 +41,7 @@ def _match(
         missing_qualifications=missing if missing is not None else [],
         apply_url="https://boards.greenhouse.io/stripe/jobs/123456",
         posting_id=posting_id,
+        source=source,
     )
 
 
@@ -136,6 +139,52 @@ def test_format_individual_message_no_truncation_for_short_reasoning():
     assert "Great fit." in body
 
 
+def test_format_individual_message_includes_source_line_when_given():
+    body = format_individual_message(
+        "Stripe",
+        "SWE Intern",
+        "Remote",
+        88,
+        "Great fit.",
+        [],
+        "https://apply.example/1",
+        "jsearch:LinkedIn",
+    )
+    assert "Source: LinkedIn" in body
+
+
+def test_format_individual_message_omits_source_line_when_empty():
+    body = format_individual_message(
+        "Stripe", "SWE Intern", "Remote", 88, "Great fit.", [], "https://apply.example/1", ""
+    )
+    assert "Source:" not in body
+
+
+# ── _friendly_source ──────────────────────────────────────────────────────────
+
+
+def test_friendly_source_maps_known_prefixes():
+    assert _friendly_source("greenhouse:stripe") == "Greenhouse"
+    assert _friendly_source("lever:acme") == "Lever"
+    assert _friendly_source("indeed") == "Indeed"
+    assert _friendly_source("hn") == "HackerNews"
+    assert _friendly_source("remoteok") == "RemoteOK"
+    assert _friendly_source("adzuna") == "Adzuna"
+
+
+def test_friendly_source_shows_jsearch_publisher_verbatim():
+    assert _friendly_source("jsearch:LinkedIn") == "LinkedIn"
+    assert _friendly_source("jsearch:ZipRecruiter") == "ZipRecruiter"
+
+
+def test_friendly_source_falls_back_for_unknown_prefix():
+    assert _friendly_source("mystery") == "Mystery"
+
+
+def test_friendly_source_handles_empty_string():
+    assert _friendly_source("") == "Unknown"
+
+
 # ── format_burst_message ──────────────────────────────────────────────────────
 
 
@@ -167,6 +216,18 @@ def test_format_burst_message_includes_apply_link_per_item():
     matches = [_match(company="Stripe")]
     body = format_burst_message(matches)
     assert "Apply: https://boards.greenhouse.io/stripe/jobs/123456" in body
+
+
+def test_format_burst_message_includes_source_when_given():
+    matches = [_match(company="Stripe", source="jsearch:LinkedIn")]
+    body = format_burst_message(matches)
+    assert "via LinkedIn" in body
+
+
+def test_format_burst_message_omits_source_when_empty():
+    matches = [_match(company="Stripe", source="")]
+    body = format_burst_message(matches)
+    assert "via" not in body
 
 
 def test_format_burst_message_caps_at_ten_lines_with_overflow_note():

@@ -216,6 +216,7 @@ def _to_match_info(posting: JobPosting) -> MatchInfo:
         missing_qualifications=list(posting.missing_qualifications or []),
         apply_url=posting.apply_url or posting.url,
         posting_id=posting.id,
+        source=posting.source,
     )
 
 
@@ -257,6 +258,7 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
                     info.reasoning,
                     info.missing_qualifications,
                     info.apply_url,
+                    info.source,
                 )
                 mark_notified(session, posting.id, chat_id, body, str(result.message_id))
                 alerts_sent += 1

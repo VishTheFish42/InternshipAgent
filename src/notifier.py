@@ -36,6 +36,32 @@ class MatchInfo:
     missing_qualifications: list[str]
     apply_url: str
     posting_id: int
+    source: str = ""
+
+
+# Maps a JobPosting.source prefix to a human-readable label. greenhouse/lever
+# encode the company slug after the colon (e.g. "greenhouse:stripe") — not
+# useful to display since the company name is already shown separately.
+# jsearch encodes the aggregator's original publisher instead (e.g.
+# "jsearch:LinkedIn") — that IS useful to show, so it's shown as-is.
+_SOURCE_LABELS = {
+    "greenhouse": "Greenhouse",
+    "lever": "Lever",
+    "indeed": "Indeed",
+    "hn": "HackerNews",
+    "remoteok": "RemoteOK",
+    "adzuna": "Adzuna",
+}
+
+
+def _friendly_source(source: str) -> str:
+    """Human-readable label for a JobPosting.source value, e.g. 'Greenhouse'
+    or 'LinkedIn' (via JSearch). Falls back to a title-cased prefix for any
+    unrecognized source rather than showing the raw internal string."""
+    prefix, _, rest = source.partition(":")
+    if prefix == "jsearch":
+        return rest or "JSearch"
+    return _SOURCE_LABELS.get(prefix, prefix.title() if prefix else "Unknown")
 
 
 @dataclass
@@ -66,15 +92,18 @@ def format_individual_message(
     reasoning: str,
     missing_qualifications: list[str],
     apply_url: str,
+    source: str = "",
 ) -> str:
     """Format a single-posting message. Every scored posting gets one of these,
-    regardless of score — the apply_url and missing-qualifications line are
-    always included verbatim; reasoning is truncated to fit _MAX_MESSAGE_CHARS."""
+    regardless of score — the apply_url, source, and missing-qualifications
+    lines are always included verbatim; reasoning is truncated to fit
+    _MAX_MESSAGE_CHARS."""
     header = f"[{_APP_NAME}] {company} · {title}"
     if location:
         header += f" · {location}"
     missing = ", ".join(missing_qualifications) if missing_qualifications else "none listed"
-    prefix = f"{header}\nMatch: {score} — "
+    source_line = f"\nSource: {_friendly_source(source)}" if source else ""
+    prefix = f"{header}{source_line}\nMatch: {score} — "
     suffix = f"\nMissing: {missing}\nApply: {apply_url}"
 
     budget = max(_MAX_MESSAGE_CHARS - len(prefix) - len(suffix), 0)
@@ -94,7 +123,8 @@ def format_burst_message(matches: list[MatchInfo]) -> str:
     for i, m in enumerate(shown, start=1):
         loc = f" · {m.location}" if m.location else ""
         missing = ", ".join(m.missing_qualifications) if m.missing_qualifications else "none listed"
-        lines.append(f" {i}. {m.company} · {m.title}{loc} ({m.score}) — missing: {missing}")
+        src = f" via {_friendly_source(m.source)}" if m.source else ""
+        lines.append(f" {i}. {m.company} · {m.title}{loc} ({m.score}){src} — missing: {missing}")
         lines.append(f"    Apply: {m.apply_url}")
 
     remaining = len(ranked) - len(shown)
@@ -274,6 +304,7 @@ def notify_matches(
                     m.reasoning,
                     m.missing_qualifications,
                     m.apply_url,
+                    m.source,
                 ),
                 reply_markup=applied_button(m.posting_id),
             )

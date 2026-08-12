@@ -1,9 +1,17 @@
-"""JSearch (RapidAPI) scraper — the only source that reaches LinkedIn (plus
-Glassdoor/ZipRecruiter) postings. Requires JSEARCH_API_KEY.
+"""JSearch (RapidAPI) scraper — the only source that reaches LinkedIn postings.
+Requires JSEARCH_API_KEY.
 
-Every other Tier 2 source is free and doesn't cover LinkedIn — see the
+Every other Tier 2 source is free but doesn't cover LinkedIn — see the
 "LinkedIn" constraint in docs/requirements.md. JSearch re-sells aggregated
 listings (including LinkedIn's) through a metered API instead.
+
+Endpoint is /search-v2, not the more commonly documented /search — confirmed
+against a live subscription; RapidAPI's "JSearch" listings vary in which
+endpoints they actually expose. Results are nested under data.jobs, not data
+directly. Each result carries job_publisher (e.g. "LinkedIn", "ZipRecruiter",
+"Indeed", "BeBee") naming the exact board it was aggregated from — encoded
+into `source` as "jsearch:{publisher}", the same compound-source convention
+greenhouse.py/lever.py use for company slugs.
 """
 
 from __future__ import annotations
@@ -15,7 +23,7 @@ import httpx
 
 from src.scrapers.base import RawPosting
 
-_SEARCH_URL = "https://jsearch.p.rapidapi.com/search"
+_SEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
 _HOST = "jsearch.p.rapidapi.com"
 
 
@@ -34,9 +42,10 @@ def _to_raw_posting(result: dict[str, Any]) -> RawPosting:
 
     location = ", ".join(p for p in [result.get("job_city"), result.get("job_state")] if p) or None
     apply_url = result.get("job_apply_link") or ""
+    publisher = result.get("job_publisher") or "Unknown"
 
     return RawPosting(
-        source="jsearch",
+        source=f"jsearch:{publisher}",
         external_id=str(result.get("job_id")),
         title=result.get("job_title", ""),
         company=result.get("employer_name", ""),
@@ -64,8 +73,8 @@ def fetch(
         _SEARCH_URL,
         params={
             "query": query,
-            "page": "1",
             "num_pages": "1",
+            "country": "us",
             "date_posted": "week",
             "employment_types": "INTERN",
         },
@@ -74,4 +83,5 @@ def fetch(
     )
     resp.raise_for_status()
     data: dict[str, Any] = resp.json()
-    return [_to_raw_posting(r) for r in data.get("data", [])]
+    jobs: list[dict[str, Any]] = (data.get("data") or {}).get("jobs") or []
+    return [_to_raw_posting(r) for r in jobs]

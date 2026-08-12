@@ -9,7 +9,7 @@ An autonomous agent that continuously monitors job boards and company career pag
 3. **Reads your resume** — drop a PDF (or multiple) into the `/resumes` folder; Claude extracts your skills, experience, and projects into a unified profile automatically. No manual YAML editing.
 4. **Deduplicates** postings so you never get the same alert twice.
 5. **Scores** each new posting 0–100 against your extracted profile — there is no minimum-score gate.
-6. **Messages you** on Telegram for every scored posting, with company name, role, match score, missing qualifications, and a direct application link — so you never have to guess what didn't make the cut.
+6. **Messages you** on Telegram for every scored posting, with company name, role, match score, missing qualifications, which board it was found on, and a direct application link — so you never have to guess what didn't make the cut.
 
 ## Architecture at a glance
 

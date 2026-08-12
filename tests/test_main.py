@@ -289,6 +289,13 @@ def test_to_match_info_includes_missing_qualifications(engine: Engine) -> None:
     assert info.missing_qualifications == ["Go"]
 
 
+def test_to_match_info_includes_source(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        posting = _stored_posting(session, source="jsearch:LinkedIn")
+        info = _to_match_info(posting)
+    assert info.source == "jsearch:LinkedIn"
+
+
 # ── _notify_and_mark ──────────────────────────────────────────────────────────
 
 
