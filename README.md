@@ -8,9 +8,8 @@ An autonomous agent that continuously monitors job boards and company career pag
 2. **Discovers company career pages automatically** — you provide company names in plain English; the agent finds their ATS (Greenhouse, Lever, Workday, etc.) and monitors their job boards directly.
 3. **Reads your resume** — drop a PDF (or multiple) into the `/resumes` folder; Claude extracts your skills, experience, and projects into a unified profile automatically. No manual YAML editing.
 4. **Deduplicates** postings so you never get the same alert twice.
-5. **Scores** each new posting 0–100 against your extracted profile and only alerts when the match exceeds your threshold.
-6. **Messages you** on Telegram with company name, role, match score, and a direct application link.
-7. **Flags near-misses** — postings that score just under your threshold but are only missing a handful of specific qualifications get bundled into a separate batched message, so you can spot patterns worth tweaking your resume/profile for.
+5. **Scores** each new posting 0–100 against your extracted profile — there is no minimum-score gate.
+6. **Messages you** on Telegram for every scored posting, with company name, role, match score, missing qualifications, and a direct application link — so you never have to guess what didn't make the cut.
 
 ## Architecture at a glance
 
@@ -72,7 +71,7 @@ cp ~/path/to/your-resume.pdf resumes/
 python -m src.main --rebuild-profile
 # This generates profile.cache.json — commit this file (not the PDF)
 
-# 7. Edit your preferences (location, threshold, excluded keywords)
+# 7. Edit your preferences (location, excluded keywords)
 # See profile.yaml — this is the only file you manually edit
 nano profile.yaml
 
@@ -132,18 +131,15 @@ preferences:
     - "PhD required"
 
 matching:
-  min_score: 70        # 0–100; only alert if Claude scores >= this
-  partial_match_min_score: 50    # postings scoring in [this, min_score) are "partial matches"
-  max_missing_qualifications: 5  # only surface a partial match missing this many quals or fewer
   digest_enabled: true # send a summary message every hour in addition to real-time alerts
   max_posting_age_days: 7  # skip postings older than this (by posted_at); no reliable posted_at → kept
 ```
 
-**Partial matches:** postings scoring in `[partial_match_min_score, min_score)` are near-misses, not full alerts. The AI scorer also names any specific skills/tools/requirements from the posting your profile doesn't show (`missing_qualifications`). If a posting's gap list is `max_missing_qualifications` items or fewer, it's surfaced — one Telegram message per posting by default, each including the missing-qualifications list and a direct apply link — so you can spot a pattern (e.g. "Kubernetes keeps coming up") worth adding to your resume. Each partial match is only ever notified once; if a later profile update pushes its score above `min_score`, it still triggers a normal full-match alert.
+**No minimum score:** every posting the scrapers pick up in the software/AI/data categories gets a Telegram message with its score, the AI's reasoning, and any `missing_qualifications` (specific skills/tools/requirements the posting names that your profile doesn't show) — so you decide what's worth applying to, rather than the agent silently dropping anything it scores as a weak fit. A 15/100 posting and a 95/100 posting both get a message; only the content differs. This trades message volume for completeness — if it gets noisy, `BURST_THRESHOLD` (see below) automatically switches a busy cycle to one batched digest message instead of one-per-posting.
 
 ## Marking postings as applied, and pausing notifications
 
-Every individual-mode alert (full or partial match) carries a **"✅ Mark Applied" button**. Tap it and the posting is permanently excluded from future alerts, even if a later profile update would otherwise push it back above the match threshold — a belt-and-suspenders safety net on top of the agent's own deduplication.
+Every individual-mode alert carries a **"✅ Mark Applied" button**. Tap it and the posting is permanently excluded from future alerts, even if a later profile update would otherwise change its score — a belt-and-suspenders safety net on top of the agent's own deduplication.
 
 Send **`/pause`** to the bot at any time to stop receiving messages, and **`/resume`** to turn them back on. This is a real kill switch, not Telegram's own per-chat mute: while paused, the agent keeps polling, deduping, and scoring underneath — matches just wait unsent until you resume, so nothing found while paused is lost. Both the button and these commands only work from your configured `TELEGRAM_CHAT_ID`; messages from any other chat are ignored.
 
@@ -162,6 +158,15 @@ companies:
 No URLs, slugs, or ATS knowledge required. The agent discovers each company's career page automatically. A starter list of ~150 companies across big tech, AI, fintech, quant, SaaS, hardware, and defense is pre-populated in your local `companies.yaml`. Add or remove names freely.
 
 `config/companies.example.yaml` is the committed placeholder — it shows the format but contains no real targets.
+
+**Important:** because `companies.yaml` is gitignored, it never reaches the deployed container on its own — a `git push` alone will not update the companies the live agent watches. After editing it, run:
+
+```bash
+python -m src.main --sync-companies
+# prints: railway variables set COMPANIES_CONFIG="<base64>"
+```
+
+and run the printed command to push the updated list to Railway (mirrors how `--rebuild-profile` pushes `PROFILE_CACHE`). Locally, `python -m src.main` reads `config/companies.yaml` directly and this step isn't needed.
 
 If a company can't be found automatically it is logged as unresolved. Check with:
 

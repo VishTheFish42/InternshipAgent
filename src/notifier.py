@@ -33,15 +33,6 @@ class MatchInfo:
     location: str | None
     score: int
     reasoning: str
-    apply_url: str
-    posting_id: int
-
-
-@dataclass
-class PartialMatchInfo:
-    company: str
-    title: str
-    score: int
     missing_qualifications: list[str]
     apply_url: str
     posting_id: int
@@ -73,15 +64,18 @@ def format_individual_message(
     location: str | None,
     score: int,
     reasoning: str,
+    missing_qualifications: list[str],
     apply_url: str,
 ) -> str:
-    """Format a single-match message. The apply_url is always included verbatim;
-    reasoning is truncated to fit within _MAX_MESSAGE_CHARS."""
+    """Format a single-posting message. Every scored posting gets one of these,
+    regardless of score — the apply_url and missing-qualifications line are
+    always included verbatim; reasoning is truncated to fit _MAX_MESSAGE_CHARS."""
     header = f"[{_APP_NAME}] {company} · {title}"
     if location:
         header += f" · {location}"
+    missing = ", ".join(missing_qualifications) if missing_qualifications else "none listed"
     prefix = f"{header}\nMatch: {score} — "
-    suffix = f"\nApply: {apply_url}"
+    suffix = f"\nMissing: {missing}\nApply: {apply_url}"
 
     budget = max(_MAX_MESSAGE_CHARS - len(prefix) - len(suffix), 0)
     if len(reasoning) > budget:
@@ -91,64 +85,22 @@ def format_individual_message(
 
 
 def format_burst_message(matches: list[MatchInfo]) -> str:
-    """Format a batched summary message for a cycle with many matches at once."""
+    """Format a batched summary message for a cycle with many scored postings
+    at once — every posting is listed, ranked highest score first."""
     ranked = sorted(matches, key=lambda m: m.score, reverse=True)
-    lines = [f"[{_APP_NAME}] {len(ranked)} new matches this cycle"]
+    lines = [f"[{_APP_NAME}] {len(ranked)} new posting{'s' if len(ranked) != 1 else ''} this cycle"]
 
     shown = ranked[:_BURST_MAX_LINES]
     for i, m in enumerate(shown, start=1):
         loc = f" · {m.location}" if m.location else ""
-        lines.append(f" {i}. {m.company} · {m.title}{loc} ({m.score})")
-        lines.append(f"    Apply: {m.apply_url}")
-
-    remaining = len(ranked) - len(shown)
-    if remaining > 0:
-        lines.append(f" + {remaining} more — run `db stats` to see all")
-
-    return "\n".join(lines)
-
-
-def format_partial_match_individual_message(
-    company: str,
-    title: str,
-    score: int,
-    missing_qualifications: list[str],
-    apply_url: str,
-) -> str:
-    """Format a single partial-match message — used in individual mode
-    (fewer than burst_threshold partial matches in the cycle)."""
-    missing = ", ".join(missing_qualifications) if missing_qualifications else "none listed"
-    return (
-        f"[{_APP_NAME}] Partial match: {company} · {title}\n"
-        f"Score: {score} — missing: {missing}\n"
-        f"Apply: {apply_url}"
-    )
-
-
-def format_partial_match_message(matches: list[PartialMatchInfo]) -> str:
-    """
-    Format a single batched message listing this cycle's partial matches —
-    postings that scored below the full match threshold but close, with few
-    enough missing qualifications to be a plausible resume-tweak target.
-    Used in burst mode (burst_threshold or more partial matches in the cycle),
-    same capped/truncated shape as format_burst_message.
-    """
-    ranked = sorted(matches, key=lambda m: m.score, reverse=True)
-    lines = [
-        f"[{_APP_NAME}] {len(ranked)} partial match{'es' if len(ranked) != 1 else ''} this cycle"
-    ]
-
-    shown = ranked[:_BURST_MAX_LINES]
-    for i, m in enumerate(shown, start=1):
         missing = ", ".join(m.missing_qualifications) if m.missing_qualifications else "none listed"
-        lines.append(f" {i}. {m.company} · {m.title} ({m.score}) — missing: {missing}")
+        lines.append(f" {i}. {m.company} · {m.title}{loc} ({m.score}) — missing: {missing}")
         lines.append(f"    Apply: {m.apply_url}")
 
     remaining = len(ranked) - len(shown)
     if remaining > 0:
         lines.append(f" + {remaining} more — run `db stats` to see all")
 
-    lines.append("Consider updating your resume/profile if you notice a pattern.")
     return "\n".join(lines)
 
 
@@ -315,42 +267,13 @@ def notify_matches(
                 bot_token,
                 chat_id,
                 format_individual_message(
-                    m.company, m.title, m.location, m.score, m.reasoning, m.apply_url
-                ),
-                reply_markup=applied_button(m.posting_id),
-            )
-        )
-    return results
-
-
-def notify_partial_matches(
-    bot_token: str,
-    matches: list[PartialMatchInfo],
-    *,
-    chat_id: str,
-    burst_threshold: int,
-) -> list[SendResult]:
-    """
-    Route partial matches to individual or burst mode based on burst_threshold,
-    and send. Mirrors notify_matches — same threshold, same pacing.
-    """
-    if not matches:
-        return []
-
-    if len(matches) >= burst_threshold:
-        body = format_partial_match_message(matches)
-        return [send_message_with_retry(bot_token, chat_id, body)]
-
-    results = []
-    for i, m in enumerate(matches):
-        if i > 0:
-            time.sleep(_INDIVIDUAL_SEND_DELAY_SECONDS)
-        results.append(
-            send_message_with_retry(
-                bot_token,
-                chat_id,
-                format_partial_match_individual_message(
-                    m.company, m.title, m.score, m.missing_qualifications, m.apply_url
+                    m.company,
+                    m.title,
+                    m.location,
+                    m.score,
+                    m.reasoning,
+                    m.missing_qualifications,
+                    m.apply_url,
                 ),
                 reply_markup=applied_button(m.posting_id),
             )

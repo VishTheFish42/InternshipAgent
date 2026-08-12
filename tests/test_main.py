@@ -29,10 +29,8 @@ from src.main import (
     _load_company_names,
     _load_yaml_config,
     _notify_and_mark,
-    _notify_partial_matches_and_mark,
     _score_and_record,
     _to_match_info,
-    _to_partial_match_info,
     _to_scoring_posting,
     process_telegram_updates,
     run_adzuna_poll,
@@ -117,19 +115,28 @@ def test_load_yaml_config_reads_file(tmp_path: Path) -> None:
 
 
 def test_load_company_names_missing_file_returns_empty(tmp_path: Path) -> None:
-    assert _load_company_names(tmp_path / "nope.yaml") == []
+    assert _load_company_names(_settings(), tmp_path / "nope.yaml") == []
 
 
 def test_load_company_names_reads_file(tmp_path: Path) -> None:
     path = tmp_path / "companies.yaml"
     path.write_text("companies:\n  - Stripe\n  - OpenAI\n", encoding="utf-8")
-    assert _load_company_names(path) == ["Stripe", "OpenAI"]
+    assert _load_company_names(_settings(), path) == ["Stripe", "OpenAI"]
 
 
 def test_load_company_names_empty_companies_key(tmp_path: Path) -> None:
     path = tmp_path / "companies.yaml"
     path.write_text("companies: []\n", encoding="utf-8")
-    assert _load_company_names(path) == []
+    assert _load_company_names(_settings(), path) == []
+
+
+def test_load_company_names_prefers_companies_config_env_over_file(tmp_path: Path) -> None:
+    import base64
+
+    path = tmp_path / "companies.yaml"
+    path.write_text("companies:\n  - FromFile\n", encoding="utf-8")
+    encoded = base64.b64encode(b"companies:\n  - FromEnv\n").decode()
+    assert _load_company_names(_settings(companies_config=encoded), path) == ["FromEnv"]
 
 
 # ── _fetch_all_postings ───────────────────────────────────────────────────────
@@ -270,6 +277,17 @@ def test_to_match_info_falls_back_to_url_when_no_apply_url(engine: Engine) -> No
     assert info.score == 80
 
 
+def test_to_match_info_includes_missing_qualifications(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        posting = _stored_posting(session)
+        record_score(session, posting.id, 20, "Weak fit.", "hash", missing_qualifications=["Go"])
+
+    with session_scope(engine) as session:
+        posting = session.query(JobPosting).one()
+        info = _to_match_info(posting)
+    assert info.missing_qualifications == ["Go"]
+
+
 # ── _notify_and_mark ──────────────────────────────────────────────────────────
 
 
@@ -346,115 +364,6 @@ def test_notify_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
         assert row.notified is False
 
 
-# ── _to_partial_match_info ────────────────────────────────────────────────────
-
-
-def test_to_partial_match_info_maps_fields(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        posting = _stored_posting(session)
-        record_score(
-            session, posting.id, 62, "Close fit.", "hash", missing_qualifications=["Kubernetes"]
-        )
-
-    with session_scope(engine) as session:
-        posting = session.query(JobPosting).one()
-        info = _to_partial_match_info(posting)
-    assert info.score == 62
-    assert info.missing_qualifications == ["Kubernetes"]
-
-
-def test_to_partial_match_info_falls_back_to_url_when_no_apply_url(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        posting = _stored_posting(session, apply_url=None)
-        record_score(session, posting.id, 60, "x", "hash")
-
-    with session_scope(engine) as session:
-        posting = session.query(JobPosting).one()
-        info = _to_partial_match_info(posting)
-    assert info.apply_url == posting.url
-
-
-# ── _notify_partial_matches_and_mark ──────────────────────────────────────────
-
-
-def test_notify_partial_matches_and_mark_empty_list_returns_zero(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        count = _notify_partial_matches_and_mark(session, [], _settings())
-    assert count == 0
-
-
-def test_notify_partial_matches_and_mark_individual_mode_marks_each_posting(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        postings = []
-        for i in range(3):
-            p = _stored_posting(
-                session,
-                external_id=str(i),
-                apply_url=f"https://boards.greenhouse.io/stripe/jobs/{i}",
-            )
-            record_score(session, p.id, 60, "x", "hash", missing_qualifications=["Kubernetes"])
-            postings.append(p)
-
-        fake_results = [SendResult(success=True, message_id=i, error=None) for i in range(3)]
-        with patch("src.main.notify_partial_matches", return_value=fake_results) as mock_notify:
-            count = _notify_partial_matches_and_mark(
-                session, postings, _settings(burst_threshold=5)
-            )
-
-    assert count == 3
-    mock_notify.assert_called_once()
-
-    with session_scope(engine) as session:
-        rows = session.query(JobPosting).all()
-        assert all(r.partial_notified for r in rows)
-        assert all(not r.notified for r in rows)
-
-
-def test_notify_partial_matches_and_mark_burst_mode_marks_all_from_single_result(
-    engine: Engine,
-) -> None:
-    with session_scope(engine) as session:
-        postings = []
-        for i in range(5):
-            p = _stored_posting(
-                session,
-                external_id=str(i),
-                apply_url=f"https://boards.greenhouse.io/stripe/jobs/{i}",
-            )
-            record_score(session, p.id, 60, "x", "hash", missing_qualifications=["Kubernetes"])
-            postings.append(p)
-
-        with patch(
-            "src.main.notify_partial_matches",
-            return_value=[SendResult(success=True, message_id=999, error=None)],
-        ):
-            count = _notify_partial_matches_and_mark(
-                session, postings, _settings(burst_threshold=5)
-            )
-
-    assert count == 5
-    with session_scope(engine) as session:
-        rows = session.query(JobPosting).all()
-        assert all(r.partial_notified for r in rows)
-
-
-def test_notify_partial_matches_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        p = _stored_posting(session)
-        record_score(session, p.id, 60, "x", "hash")
-
-        with patch(
-            "src.main.notify_partial_matches",
-            return_value=[SendResult(success=False, message_id=None, error="failed")],
-        ):
-            count = _notify_partial_matches_and_mark(session, [p], _settings(burst_threshold=5))
-
-    assert count == 0
-    with session_scope(engine) as session:
-        row = session.query(JobPosting).one()
-        assert row.partial_notified is False
-
-
 # ── run_cycle ─────────────────────────────────────────────────────────────────
 
 
@@ -462,7 +371,7 @@ def test_run_cycle_seeds_companies_from_config(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "companies.yaml").write_text(
         "companies:\n  - Stripe\n  - OpenAI\n", encoding="utf-8"
@@ -490,7 +399,7 @@ def test_run_cycle_skips_seeding_when_no_companies_configured(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
     fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
 
     with (
@@ -508,7 +417,7 @@ def test_run_cycle_dry_run_never_sends_notifications(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
     fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
@@ -530,7 +439,7 @@ def test_run_cycle_sends_alerts_for_matches_above_threshold(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
 
@@ -570,7 +479,7 @@ def test_run_cycle_holds_matches_when_notifications_paused(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
     with (
         session_scope(engine) as session,
@@ -602,14 +511,13 @@ def test_run_cycle_holds_matches_when_notifications_paused(
         assert session.query(JobPosting).one().notified is False
 
 
-def test_run_cycle_sends_partial_match_digest(
+def test_run_cycle_sends_alerts_for_low_score_postings_too(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """There is no minimum-score gate: even a weak-fit posting gets notified,
+    with its missing_qualifications carried through to the outbound message info."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text(
-        "matching:\n  min_score: 70\n  partial_match_min_score: 50\n  max_missing_qualifications: 5\n",
-        encoding="utf-8",
-    )
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
 
@@ -625,8 +533,8 @@ def test_run_cycle_sends_partial_match_digest(
         scored=[
             ScoredPosting(
                 external_id=str(db_id),
-                score=60,
-                reasoning="Close fit.",
+                score=15,
+                reasoning="Weak fit.",
                 missing_qualifications=["Kubernetes"],
             )
         ],
@@ -640,7 +548,7 @@ def test_run_cycle_sends_partial_match_digest(
         patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
         patch("src.main.score_postings", return_value=fake_score),
         patch(
-            "src.main.notify_partial_matches",
+            "src.main.notify_matches",
             return_value=[SendResult(success=True, message_id=1, error=None)],
         ) as mock_notify,
     ):
@@ -653,44 +561,14 @@ def test_run_cycle_sends_partial_match_digest(
 
     with session_scope(engine) as session:
         row = session.query(JobPosting).one()
-        assert row.partial_notified is True
-        assert row.notified is False
-
-
-def test_run_cycle_dry_run_never_sends_partial_match_digest(
-    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text(
-        "matching:\n  min_score: 70\n  partial_match_min_score: 50\n", encoding="utf-8"
-    )
-
-    source = MagicMock(return_value=[_raw_posting(external_id="1")])
-    fake_score = ScoringResult(
-        scored=[ScoredPosting(external_id="1", score=60, reasoning="Close fit.")],
-        input_tokens=10,
-        output_tokens=5,
-        estimated_cost_usd=0.0001,
-    )
-
-    with (
-        session_scope(engine) as session,
-        patch("src.main._SOURCES", [("greenhouse", source)]),
-        patch("src.main.score_postings", return_value=fake_score),
-        patch("src.main.send_message_with_retry") as mock_send,
-        patch("src.main.notify_partial_matches") as mock_notify_partial,
-    ):
-        run_cycle(session, _settings(), dry_run=True)
-
-    mock_send.assert_not_called()
-    mock_notify_partial.assert_not_called()
+        assert row.notified is True
 
 
 def test_run_cycle_records_errors_from_failed_sources(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 70\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
     failing = MagicMock(side_effect=RuntimeError("API down"))
     fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)

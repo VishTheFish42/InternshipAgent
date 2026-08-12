@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # Profile: base64-encoded profile.cache.json for cloud; falls back to local file for dev
     profile_cache: str | None = None
 
+    # Companies: base64-encoded companies.yaml for cloud; falls back to local file for dev.
+    # config/companies.yaml is gitignored (private target list), so it never reaches the
+    # deployed container on its own — this is the only way company-direct monitoring works
+    # in production. Regenerate with `python -m src.main --sync-companies`.
+    companies_config: str | None = None
+
     # Infrastructure
     database_url: str = "sqlite:///./internship_agent.db"
 

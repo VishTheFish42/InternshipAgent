@@ -6,9 +6,8 @@ preferences:
   keywords_excluded: []
 
 matching:
-  min_score: 70        # 0–100; only alert if Claude scores >= this
-  partial_match_min_score: 50    # postings scoring in [this, min_score) are "partial matches"
-  max_missing_qualifications: 5  # only surface a partial match missing this many quals or fewer
+  # No minimum score — every scored posting gets an alert with its score and
+  # missing qualifications; you decide what's worth applying to.
   digest_enabled: true  # send a summary message every hour in addition to real-time alerts
   max_posting_age_days: 7  # skip postings older than this (by posted_at); postings with no
                            # reliable posted_at are kept

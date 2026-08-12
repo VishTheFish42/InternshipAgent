@@ -7,18 +7,14 @@ from unittest.mock import MagicMock, patch
 
 from src.notifier import (
     MatchInfo,
-    PartialMatchInfo,
     _redact_chat_id,
     answer_callback_query,
     applied_button,
     format_burst_message,
     format_digest,
     format_individual_message,
-    format_partial_match_individual_message,
-    format_partial_match_message,
     get_updates,
     notify_matches,
-    notify_partial_matches,
     send_message,
     send_message_with_retry,
 )
@@ -27,7 +23,12 @@ from src.notifier import (
 
 
 def _match(
-    company="Stripe", title="Software Engineering Intern", location="Remote", score=88, posting_id=1
+    company="Stripe",
+    title="Software Engineering Intern",
+    location="Remote",
+    score=88,
+    missing=None,
+    posting_id=1,
 ):
     return MatchInfo(
         company=company,
@@ -35,18 +36,8 @@ def _match(
         location=location,
         score=score,
         reasoning="Strong Python/backend fit, welcoming undergrads.",
+        missing_qualifications=missing if missing is not None else [],
         apply_url="https://boards.greenhouse.io/stripe/jobs/123456",
-        posting_id=posting_id,
-    )
-
-
-def _partial_match(company="Acme Corp", title="SWE Intern", score=62, missing=None, posting_id=1):
-    return PartialMatchInfo(
-        company=company,
-        title=title,
-        score=score,
-        missing_qualifications=missing if missing is not None else ["Kubernetes", "GraphQL"],
-        apply_url="https://boards.greenhouse.io/acme/jobs/1",
         posting_id=posting_id,
     )
 
@@ -84,6 +75,7 @@ def test_format_individual_message_includes_all_fields():
         "Remote",
         88,
         "Great fit.",
+        ["Kubernetes"],
         "https://apply.example/1",
     )
     assert "Stripe" in body
@@ -91,15 +83,23 @@ def test_format_individual_message_includes_all_fields():
     assert "Remote" in body
     assert "88" in body
     assert "Great fit." in body
+    assert "Kubernetes" in body
     assert "https://apply.example/1" in body
 
 
 def test_format_individual_message_omits_location_when_none():
     body = format_individual_message(
-        "Stripe", "SWE Intern", None, 88, "Great fit.", "https://apply.example/1"
+        "Stripe", "SWE Intern", None, 88, "Great fit.", [], "https://apply.example/1"
     )
     assert " · Remote" not in body
     assert "Stripe · SWE Intern" in body
+
+
+def test_format_individual_message_handles_empty_missing_list():
+    body = format_individual_message(
+        "Stripe", "SWE Intern", "Remote", 88, "Great fit.", [], "https://apply.example/1"
+    )
+    assert "Missing: none listed" in body
 
 
 def test_format_individual_message_stays_within_message_budget():
@@ -109,6 +109,7 @@ def test_format_individual_message_stays_within_message_budget():
         "Remote",
         88,
         "x" * 5000,
+        [],
         "https://apply.example/1",
     )
     assert len(body) <= 4096
@@ -116,20 +117,20 @@ def test_format_individual_message_stays_within_message_budget():
 
 def test_format_individual_message_never_truncates_apply_url():
     long_url = "https://apply.example/" + "a" * 300
-    body = format_individual_message("Stripe", "SWE Intern", "Remote", 88, "x" * 5000, long_url)
+    body = format_individual_message("Stripe", "SWE Intern", "Remote", 88, "x" * 5000, [], long_url)
     assert long_url in body
 
 
 def test_format_individual_message_truncates_reasoning_with_ellipsis():
     body = format_individual_message(
-        "Stripe", "SWE Intern", "Remote", 88, "x" * 5000, "https://apply.example/1"
+        "Stripe", "SWE Intern", "Remote", 88, "x" * 5000, [], "https://apply.example/1"
     )
     assert "…" in body
 
 
 def test_format_individual_message_no_truncation_for_short_reasoning():
     body = format_individual_message(
-        "Stripe", "SWE Intern", "Remote", 88, "Great fit.", "https://apply.example/1"
+        "Stripe", "SWE Intern", "Remote", 88, "Great fit.", [], "https://apply.example/1"
     )
     assert "…" not in body
     assert "Great fit." in body
@@ -141,8 +142,25 @@ def test_format_individual_message_no_truncation_for_short_reasoning():
 def test_format_burst_message_includes_count_and_ranks_by_score():
     matches = [_match(company="Zeta", score=50), _match(company="Omega", score=90)]
     body = format_burst_message(matches)
-    assert "2 new matches" in body
+    assert "2 new postings" in body
     assert body.index("Omega") < body.index("Zeta")
+
+
+def test_format_burst_message_singular_for_one_posting():
+    body = format_burst_message([_match(company="Stripe")])
+    assert "1 new posting this cycle" in body
+
+
+def test_format_burst_message_includes_missing_qualifications_per_item():
+    matches = [_match(company="Acme", missing=["Kubernetes", "GraphQL"])]
+    body = format_burst_message(matches)
+    assert "missing: Kubernetes, GraphQL" in body
+
+
+def test_format_burst_message_handles_empty_missing_list():
+    matches = [_match(company="Acme", missing=[])]
+    body = format_burst_message(matches)
+    assert "missing: none listed" in body
 
 
 def test_format_burst_message_includes_apply_link_per_item():
@@ -164,74 +182,6 @@ def test_format_burst_message_no_overflow_note_when_under_cap():
     matches = [_match(company="A"), _match(company="B")]
     body = format_burst_message(matches)
     assert "more" not in body
-
-
-# ── format_partial_match_message ──────────────────────────────────────────────
-
-
-def test_format_partial_match_message_includes_count_and_missing_quals():
-    matches = [_partial_match(company="Acme", missing=["Kubernetes", "GraphQL"])]
-    body = format_partial_match_message(matches)
-    assert "1 partial match this cycle" in body
-    assert "Acme" in body
-    assert "Kubernetes, GraphQL" in body
-
-
-def test_format_partial_match_message_pluralizes_for_multiple():
-    matches = [_partial_match(company="A"), _partial_match(company="B")]
-    body = format_partial_match_message(matches)
-    assert "2 partial matches this cycle" in body
-
-
-def test_format_partial_match_message_ranks_by_score():
-    matches = [_partial_match(company="Zeta", score=50), _partial_match(company="Omega", score=68)]
-    body = format_partial_match_message(matches)
-    assert body.index("Omega") < body.index("Zeta")
-
-
-def test_format_partial_match_message_handles_empty_missing_list():
-    matches = [_partial_match(missing=[])]
-    body = format_partial_match_message(matches)
-    assert "none listed" in body
-
-
-def test_format_partial_match_message_caps_at_ten_lines_with_overflow_note():
-    matches = [_partial_match(company=f"Company{i}", score=i) for i in range(15)]
-    body = format_partial_match_message(matches)
-    for i in range(1, 11):
-        assert f" {i}. " in body
-    assert "+ 5 more" in body
-
-
-def test_format_partial_match_message_includes_resume_tip():
-    body = format_partial_match_message([_partial_match()])
-    assert "resume" in body.lower()
-
-
-def test_format_partial_match_message_includes_apply_link_per_item():
-    body = format_partial_match_message([_partial_match()])
-    assert "Apply: https://boards.greenhouse.io/acme/jobs/1" in body
-
-
-# ── format_partial_match_individual_message ───────────────────────────────────
-
-
-def test_format_partial_match_individual_message_includes_all_fields():
-    body = format_partial_match_individual_message(
-        "Acme Corp", "SWE Intern", 62, ["Kubernetes", "GraphQL"], "https://apply.example/1"
-    )
-    assert "Acme Corp" in body
-    assert "SWE Intern" in body
-    assert "62" in body
-    assert "Kubernetes, GraphQL" in body
-    assert "https://apply.example/1" in body
-
-
-def test_format_partial_match_individual_message_handles_empty_missing_list():
-    body = format_partial_match_individual_message(
-        "Acme", "Intern", 60, [], "https://apply.example/1"
-    )
-    assert "none listed" in body
 
 
 # ── format_digest ──────────────────────────────────────────────────────────────
@@ -384,7 +334,7 @@ def test_notify_matches_burst_mode_at_or_above_threshold():
     assert len(results) == 1
     assert mock_post.call_count == 1
     body = mock_post.call_args.kwargs["json"]["text"]
-    assert "5 new matches" in body
+    assert "5 new postings" in body
     assert "reply_markup" not in mock_post.call_args.kwargs["json"]
 
 
@@ -411,54 +361,6 @@ def test_notify_matches_burst_mode_does_not_pace_sends():
         notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
 
     mock_sleep.assert_not_called()
-
-
-# ── notify_partial_matches ────────────────────────────────────────────────────
-
-
-def test_notify_partial_matches_empty_list_sends_nothing():
-    with patch("src.notifier.httpx.post") as mock_post:
-        results = notify_partial_matches("bot-token", [], chat_id="12345", burst_threshold=5)
-    assert results == []
-    mock_post.assert_not_called()
-
-
-def test_notify_partial_matches_individual_mode_below_threshold():
-    matches = [
-        _partial_match(company="A", posting_id=201),
-        _partial_match(company="B", posting_id=202),
-    ]
-
-    with (
-        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
-        patch("src.notifier.time.sleep") as mock_sleep,
-    ):
-        results = notify_partial_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
-
-    assert len(results) == 2
-    assert mock_post.call_count == 2
-    mock_sleep.assert_called_once_with(1.0)
-
-    first_body = mock_post.call_args_list[0].kwargs["json"]["text"]
-    assert "Partial match: A" in first_body
-    first_markup = mock_post.call_args_list[0].kwargs["json"]["reply_markup"]
-    assert first_markup["inline_keyboard"][0][0]["callback_data"] == "applied:201"
-
-
-def test_notify_partial_matches_burst_mode_at_or_above_threshold():
-    matches = [_partial_match(company=f"C{i}") for i in range(5)]
-
-    with (
-        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
-        patch("src.notifier.time.sleep") as mock_sleep,
-    ):
-        results = notify_partial_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
-
-    assert len(results) == 1
-    assert mock_post.call_count == 1
-    mock_sleep.assert_not_called()
-    body = mock_post.call_args.kwargs["json"]["text"]
-    assert "5 partial matches" in body
 
 
 # ── applied_button ────────────────────────────────────────────────────────────

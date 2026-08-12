@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import signal
@@ -26,16 +27,14 @@ from src.db import (
     Notification,
     get_bot_state,
     get_last_run_log,
-    get_unnotified_above_threshold,
-    get_unnotified_partial_matches,
     get_unnotified_postings,
+    get_unnotified_scored_postings,
     get_unresolved_companies,
     get_unscored_postings,
     init_db,
     log_run,
     mark_applied,
     mark_notified,
-    mark_partial_notified,
     record_score,
     session_scope,
     set_notifications_paused,
@@ -45,16 +44,12 @@ from src.deduplicator import upsert_deduped
 from src.matcher import ScoringResult, hash_profile, score_postings
 from src.notifier import (
     MatchInfo,
-    PartialMatchInfo,
     answer_callback_query,
     format_burst_message,
     format_digest,
     format_individual_message,
-    format_partial_match_individual_message,
-    format_partial_match_message,
     get_updates,
     notify_matches,
-    notify_partial_matches,
     send_message_with_retry,
 )
 from src.resume_extractor import rebuild_profile
@@ -90,7 +85,14 @@ def _load_yaml_config(path: Path = _PROFILE_YAML) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
-def _load_company_names(path: Path = _COMPANIES_YAML) -> list[str]:
+def _load_company_names(settings: Settings, path: Path = _COMPANIES_YAML) -> list[str]:
+    """Prefer COMPANIES_CONFIG (base64 companies.yaml, set for the deployed
+    container since config/companies.yaml is gitignored); fall back to the
+    local file for dev."""
+    if settings.companies_config:
+        raw = base64.b64decode(settings.companies_config).decode("utf-8")
+        data = yaml.safe_load(raw) or {}
+        return list(data.get("companies", []))
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -211,14 +213,17 @@ def _to_match_info(posting: JobPosting) -> MatchInfo:
         location=posting.location,
         score=posting.match_score or 0,
         reasoning=posting.match_reasoning or "",
+        missing_qualifications=list(posting.missing_qualifications or []),
         apply_url=posting.apply_url or posting.url,
         posting_id=posting.id,
     )
 
 
 def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Settings) -> int:
-    """Send alerts for matches (individual or burst mode) and mark each as
-    notified. Returns the number of postings successfully notified."""
+    """Send alerts for every scored posting (individual or burst mode) and
+    mark each as notified. Returns the number of postings successfully
+    notified. There is no minimum-score gate — every posting passed in gets
+    an alert."""
     if not matches:
         return 0
 
@@ -250,64 +255,10 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
                     info.location,
                     info.score,
                     info.reasoning,
-                    info.apply_url,
-                )
-                mark_notified(session, posting.id, chat_id, body, str(result.message_id))
-                alerts_sent += 1
-
-    return alerts_sent
-
-
-def _to_partial_match_info(posting: JobPosting) -> PartialMatchInfo:
-    return PartialMatchInfo(
-        company=posting.company,
-        title=posting.title,
-        score=posting.match_score or 0,
-        missing_qualifications=list(posting.missing_qualifications or []),
-        apply_url=posting.apply_url or posting.url,
-        posting_id=posting.id,
-    )
-
-
-def _notify_partial_matches_and_mark(
-    session: Session, partial_matches: list[JobPosting], settings: Settings
-) -> int:
-    """Send partial-match notices (individual or burst mode, same threshold
-    and pacing as full matches) and mark each as partial_notified. Returns
-    the number of postings successfully notified."""
-    if not partial_matches:
-        return 0
-
-    bot_token = settings.telegram_bot_token or ""
-    chat_id = settings.telegram_chat_id or ""
-    infos = [_to_partial_match_info(p) for p in partial_matches]
-    results = notify_partial_matches(
-        bot_token,
-        infos,
-        chat_id=chat_id,
-        burst_threshold=settings.burst_threshold,
-    )
-
-    alerts_sent = 0
-    is_burst = len(partial_matches) >= settings.burst_threshold
-    if is_burst:
-        result = results[0]
-        if result.success:
-            body = format_partial_match_message(infos)
-            for posting in partial_matches:
-                mark_partial_notified(session, posting.id, chat_id, body, str(result.message_id))
-                alerts_sent += 1
-    else:
-        for posting, info, result in zip(partial_matches, infos, results, strict=True):
-            if result.success:
-                body = format_partial_match_individual_message(
-                    info.company,
-                    info.title,
-                    info.score,
                     info.missing_qualifications,
                     info.apply_url,
                 )
-                mark_partial_notified(session, posting.id, chat_id, body, str(result.message_id))
+                mark_notified(session, posting.id, chat_id, body, str(result.message_id))
                 alerts_sent += 1
 
     return alerts_sent
@@ -388,7 +339,7 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     run_log data that was recorded."""
     started_at = _now()
 
-    company_names = _load_company_names()
+    company_names = _load_company_names(settings)
     if company_names:
         seed_result = seed_companies(session, company_names, settings.search_api_key)
         if seed_result.newly_attempted:
@@ -401,9 +352,6 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     config = _load_yaml_config()
     preferences = config.get("preferences", {})
     matching = config.get("matching", {})
-    min_score = matching.get("min_score", 70)
-    partial_match_min_score = matching.get("partial_match_min_score", 50)
-    max_missing_qualifications = matching.get("max_missing_qualifications", 5)
     max_posting_age_days = matching.get("max_posting_age_days", 7)
 
     raw_postings, sources_polled, errors = _fetch_all_postings(session)
@@ -424,26 +372,18 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
         session, to_score, profile, preferences, profile_hash, settings
     )
 
-    matches = get_unnotified_above_threshold(session, min_score)
-    partial_matches = get_unnotified_partial_matches(
-        session, partial_match_min_score, min_score, max_missing_qualifications
-    )
+    matches = get_unnotified_scored_postings(session)
     if dry_run:
-        _log.info("[dry-run] Would send alerts for %d match(es)", len(matches))
-        _log.info("[dry-run] Would send %d partial match(es)", len(partial_matches))
+        _log.info("[dry-run] Would send alerts for %d posting(s)", len(matches))
         alerts_sent = 0
     elif get_bot_state(session).notifications_paused:
         _log.info(
-            "Notifications paused — holding %d match(es) and %d partial match(es) for next cycle",
+            "Notifications paused — holding %d posting(s) for next cycle",
             len(matches),
-            len(partial_matches),
         )
         alerts_sent = 0
     else:
         alerts_sent = _notify_and_mark(session, matches, settings)
-        partial_alerts_sent = _notify_partial_matches_and_mark(session, partial_matches, settings)
-        if partial_alerts_sent:
-            _log.info("Sent partial-match digest covering %d posting(s)", partial_alerts_sent)
 
     run_data = {
         "started_at": started_at,
@@ -546,6 +486,16 @@ def _parse_args() -> argparse.Namespace:
             "profile.cache.json, and print the railway variables set command."
         ),
     )
+    parser.add_argument(
+        "--sync-companies",
+        action="store_true",
+        help=(
+            "Base64-encode config/companies.yaml and print the railway variables "
+            "set command for COMPANIES_CONFIG. Run this after editing companies.yaml "
+            "— the file is gitignored, so it never reaches the deployed container "
+            "any other way."
+        ),
+    )
     parser.add_argument("--run-once", action="store_true", help="Run a single cycle, then exit.")
     parser.add_argument(
         "--dry-run", action="store_true", help="Run the full pipeline but do not send SMS."
@@ -574,6 +524,13 @@ def main() -> None:
 
     if args.rebuild_profile:
         rebuild_profile(_RESUMES_DIR)
+        sys.exit(0)
+
+    if args.sync_companies:
+        if not _COMPANIES_YAML.exists():
+            sys.exit(f"{_COMPANIES_YAML} not found — nothing to sync.")
+        encoded = base64.b64encode(_COMPANIES_YAML.read_bytes()).decode()
+        print(f'railway variables set COMPANIES_CONFIG="{encoded}"')
         sys.exit(0)
 
     settings = get_settings()
