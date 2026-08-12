@@ -11,7 +11,10 @@ from src.scrapers.base import RawPosting
 
 _API_URL = "https://remoteok.com/api"
 _USER_AGENT = "InternshipAgent/1.0 (+personal internship alert tool)"
-_INTERN_TAGS = {"intern", "internship", "junior"}
+_INTERN_TAGS = {"intern", "internship"}
+# Deliberately excludes "junior" — RemoteOK tags junior roles across every field
+# (marketing, design, sales, ...), not just software; that bare tag was letting
+# through postings with no software relevance at all.
 
 
 def _fetch_jobs() -> list[dict[str, Any]]:

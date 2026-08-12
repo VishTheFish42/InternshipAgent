@@ -6,8 +6,13 @@ preferences:
   keywords_excluded: []
 
 matching:
-  # No minimum score — every scored posting gets an alert with its score and
-  # missing qualifications; you decide what's worth applying to.
+  # NOT a "good personal fit" bar (there isn't one — every real software/AI/data
+  # posting gets an alert regardless of how weak the fit is, with its score and
+  # missing qualifications so you judge for yourself). This only cuts postings
+  # the AI scorer identified as flat-out the wrong field — some sources (e.g.
+  # RemoteOK's "junior" tag) pull in non-software roles that the scoring prompt
+  # pushes to 0-5. Raise this only if off-domain noise creeps back in.
+  min_relevance_score: 15
   digest_enabled: true  # send a summary message every hour in addition to real-time alerts
   max_posting_age_days: 7  # skip postings older than this (by posted_at); postings with no
                            # reliable posted_at are kept

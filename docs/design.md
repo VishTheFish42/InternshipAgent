@@ -257,7 +257,7 @@ Designed in but never built — there is no `src/scrapers/wellfound.py`. `WELLFO
 
 - **Provider**: RemoteOK public API (`remoteok.com/api`) — free, no auth, no rate limit specified
 - **Covers**: Remote-only internships and entry-level roles across all tech companies; good coverage of distributed/async-first companies that don't post on LinkedIn
-- **Filter**: tags include `intern` or `junior`; parsed from JSON feed
+- **Filter**: tags include `intern` or `internship`; parsed from JSON feed. **Deliberately does not match the bare `junior` tag** — that was matched originally, but RemoteOK tags junior roles across every field (marketing, design, sales, ...), not just software, and it was letting through postings with zero domain relevance. Found and fixed after the no-score-floor change (§8.2a) made this previously-silent noise visible as real Telegram messages.
 - **Dedup key**: `remoteok:{id}`
 
 ### 4.7 Dice — NOT WIRED IN
@@ -408,8 +408,9 @@ CREATE TABLE job_postings (
     description         TEXT,
     posted_at           DATETIME,
     found_at            DATETIME NOT NULL,
-    match_score         INTEGER,            -- 0–100; NULL = not yet scored. No minimum-score gate on
-                                             -- notification — every scored posting gets an alert.
+    match_score         INTEGER,            -- 0–100; NULL = not yet scored. No fit-quality gate on
+                                             -- notification — only a small domain-relevance floor
+                                             -- (min_relevance_score, default 15, §8.2a).
     match_reasoning     TEXT,
     missing_qualifications JSON,            -- Claude-identified gaps vs. the profile (list[str])
     profile_hash        TEXT,               -- hash of profile.cache.json at scoring time
@@ -506,17 +507,23 @@ Prompt caching means the profile is only tokenized once per cache window (~5 min
 
 ### 8.2 Scoring rubric (in the system prompt)
 
-Claude is instructed to evaluate each posting on:
+**Hard domain gate first**: if the posting isn't SWE/DS/ML/AI at all (marketing, sales, design, ops, ...), Claude scores it 0-5 regardless of anything else and skips the weighted rubric below. This exists because not every fetch-layer filter is software-scoped (§4.5, §4.6) — the gate is the thing doing real filtering work now that there's no downstream fit-quality threshold (§8.2a).
+
+For postings that pass the gate, Claude evaluates:
 - **Skills alignment** (40%): does the posting require skills the user has?
-- **Domain relevance** (30%): is this a SWE / DS / ML / AI role?
+- **Domain relevance** (30%): is this a SWE / DS / ML / AI role specifically (vs. adjacent technical fields like IT support or QA)?
 - **Seniority fit** (20%): is this appropriate for the user's experience level?
 - **Role accessibility** (10%): are there gatekeeping requirements (PhD, clearance, 2+ YOE) the user doesn't meet?
 
 Score 0–100. Claude also identifies `missing_qualifications`: specific skills, tools, or requirements named in the posting that the candidate's profile doesn't show (empty list for a strong match). Return JSON array with `external_id`, `score`, `reasoning` (1–2 sentences), `missing_qualifications` (list of short strings).
 
-### 8.2a No minimum-score gate
+### 8.2a No fit-quality gate, but a domain-relevance floor
 
-There is no `min_score` threshold and no separate "partial match" tier — both existed at one point and were removed. Every scored posting is notified, with its score, reasoning, and `missing_qualifications` all included in the message (§9.2), so the user judges fit themselves rather than the system silently dropping weak matches. See §9.1 for the unified notification routing.
+There is no `min_score` "good personal fit" threshold and no separate "partial match" tier — both existed at one point and were removed. Every scored posting is notified, with its score, reasoning, and `missing_qualifications` all included in the message (§9.2), so the user judges fit themselves rather than the system silently dropping weak matches.
+
+This surfaced a real problem: not every source's fetch-layer filter is software-scoped (§4.5, §4.6 — HN matches the word "intern" anywhere in a comment, RemoteOK matched a generic `junior` tag before that was fixed). With no floor at all, those off-domain postings were sent as real messages too, just with a low score attached — noise the old `min_score=70` had been silently absorbing as a side effect, not by design.
+
+Two-part fix: the scoring prompt (§8.1) now has an explicit hard domain gate instructing Claude to score anything outside SWE/DS/ML/AI at 0-5 regardless of other factors, and `profile.yaml → matching.min_relevance_score` (default 15) filters those out in `get_unnotified_scored_postings()`. This is a "is this even the right field" gate, not a "would I apply to this" gate — a weak-but-genuine software posting still clears it easily. See §9.1 for the unified notification routing.
 
 ### 8.3 Model selection
 
@@ -547,7 +554,7 @@ Total: well within the $10/month budget.
 
 ### 9.1 Notification modes
 
-The notifier operates in one of two modes per polling cycle, depending on how many scored postings there are to notify (`notify_matches()`). There is no separate full/partial-match distinction — every scored posting goes through this same single path, since the score floor was removed (§8.2a).
+The notifier operates in one of two modes per polling cycle, depending on how many scored postings there are to notify (`notify_matches()`). There is no separate full/partial-match distinction — every posting at or above the domain-relevance floor goes through this same single path (§8.2a).
 
 **Individual mode** (< `BURST_THRESHOLD` postings, default 20): one message per posting, each including its score, reasoning, missing qualifications, source board, and a direct apply link, plus a "Mark Applied" button. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 postings takes ~15 seconds to fully notify, not instant.
 
@@ -641,7 +648,8 @@ each main-cycle run:
   └── deduplicate against DB (insert new, skip known; skip anything older than
       max_posting_age_days)
   └── batch-score all NULL-score postings (groups of 10 via Claude)
-  └── for every scored, unnotified, non-applied posting — no score floor:
+  └── for every scored, unnotified, non-applied posting >= min_relevance_score (default
+      15 — a domain-relevance floor, not a fit-quality gate):
         └── send Telegram message (individual or burst, by BURST_THRESHOLD)
         └── mark notified=TRUE
   └── check if profile hash changed → trigger re-score pass on unnotified postings

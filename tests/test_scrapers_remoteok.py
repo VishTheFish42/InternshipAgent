@@ -49,8 +49,11 @@ def test_is_internship_matches_intern_tag():
     assert _is_internship(_INTERN_JOB)
 
 
-def test_is_internship_matches_junior_tag():
-    assert _is_internship(_JUNIOR_JOB)
+def test_is_internship_rejects_bare_junior_tag():
+    """The bare 'junior' tag is deliberately excluded — RemoteOK tags junior
+    roles across every field, not just software, and letting it through was
+    sending non-software postings with no domain relevance at all."""
+    assert not _is_internship(_JUNIOR_JOB)
 
 
 def test_is_internship_matches_intern_in_position_without_tag():
@@ -97,7 +100,7 @@ def test_fetch_filters_legal_notice_and_non_intern_jobs():
         return_value=[_INTERN_JOB, _JUNIOR_JOB],
     ):
         postings = fetch()
-    assert {p.external_id for p in postings} == {"111222", "333444"}
+    assert {p.external_id for p in postings} == {"111222"}
 
 
 def test_fetch_excludes_senior_roles():

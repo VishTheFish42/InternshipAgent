@@ -8,8 +8,8 @@ An autonomous agent that continuously monitors job boards and company career pag
 2. **Discovers company career pages automatically** — you provide company names in plain English; the agent finds their ATS (Greenhouse, Lever, Workday, etc.) and monitors their job boards directly.
 3. **Reads your resume** — drop a PDF (or multiple) into the `/resumes` folder; Claude extracts your skills, experience, and projects into a unified profile automatically. No manual YAML editing.
 4. **Deduplicates** postings so you never get the same alert twice.
-5. **Scores** each new posting 0–100 against your extracted profile — there is no minimum-score gate.
-6. **Messages you** on Telegram for every scored posting, with company name, role, match score, missing qualifications, which board it was found on, and a direct application link — so you never have to guess what didn't make the cut.
+5. **Scores** each new posting 0–100 against your extracted profile — no "good fit" gate, just a small floor to cut postings the AI flags as the wrong field entirely.
+6. **Messages you** on Telegram for every real software/AI/data posting, with company name, role, match score, missing qualifications, which board it was found on, and a direct application link — so you never have to guess what didn't make the cut.
 
 ## Architecture at a glance
 
@@ -131,11 +131,12 @@ preferences:
     - "PhD required"
 
 matching:
+  min_relevance_score: 15  # domain-relevance floor, NOT a "good fit" bar — see below
   digest_enabled: true # send a summary message every hour in addition to real-time alerts
   max_posting_age_days: 7  # skip postings older than this (by posted_at); no reliable posted_at → kept
 ```
 
-**No minimum score:** every posting the scrapers pick up in the software/AI/data categories gets a Telegram message with its score, the AI's reasoning, and any `missing_qualifications` (specific skills/tools/requirements the posting names that your profile doesn't show) — so you decide what's worth applying to, rather than the agent silently dropping anything it scores as a weak fit. A 15/100 posting and a 95/100 posting both get a message; only the content differs. This trades message volume for completeness — if it gets noisy, `BURST_THRESHOLD` (see below) automatically switches a busy cycle to one batched digest message instead of one-per-posting.
+**No fit-quality gate, but a small domain-relevance floor:** every genuine software/AI/data posting gets a Telegram message with its score, the AI's reasoning, and any `missing_qualifications` — a 15/100 weak-fit posting and a 95/100 strong-fit posting both get a message, so you decide what's worth applying to rather than the agent silently dropping anything it scores as a weak personal fit. `min_relevance_score` (default 15) exists for a different reason: some sources aren't software-scoped at the fetch layer (e.g. RemoteOK tags a `"junior"` role in marketing or design the same as a junior *software* role), so the scoring prompt has a hard rule to push anything outside SWE/DS/ML/AI to a 0-5 score, and this floor cuts those out. It's a "is this even the right field" gate, not a "would I apply to this" gate — raise it only if off-domain postings are still getting through. This trades message volume for completeness — if it gets noisy, `BURST_THRESHOLD` (see below) automatically switches a busy cycle to one batched digest message instead of one-per-posting.
 
 ## Marking postings as applied, and pausing notifications
 

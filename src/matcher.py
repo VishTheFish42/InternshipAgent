@@ -30,9 +30,18 @@ You are scoring internship postings for fit against this candidate profile:
 
 {profile_summary}
 
-Evaluate each posting on:
+First, a hard domain gate: if the posting is NOT a software engineering, data \
+science, machine learning, or AI role — e.g. marketing, sales, design, operations, \
+finance, or any other non-technical field — score it 0-5 regardless of any other \
+factor, even if the candidate would technically qualify. Every posting reaching you \
+was pulled in by a broad keyword/tag search that isn't software-scoped (e.g. a job \
+board's generic "junior" tag), so this gate is doing real filtering work, not a \
+formality — don't skip it.
+
+For postings that pass the domain gate, evaluate on:
 - Skills alignment (40%): does the posting require skills the candidate has?
-- Domain relevance (30%): is this a SWE / DS / ML / AI role?
+- Domain relevance (30%): is this a SWE / DS / ML / AI role specifically (vs. adjacent \
+technical fields like IT support or QA)?
 - Seniority fit (20%): is this appropriate for the candidate's experience level?
 - Role accessibility (10%): are there gatekeeping requirements (PhD, security clearance, \
 2+ years experience) the candidate doesn't meet?

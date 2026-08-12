@@ -355,6 +355,7 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     preferences = config.get("preferences", {})
     matching = config.get("matching", {})
     max_posting_age_days = matching.get("max_posting_age_days", 7)
+    min_relevance_score = matching.get("min_relevance_score", 15)
 
     raw_postings, sources_polled, errors = _fetch_all_postings(session)
     postings_found = len(raw_postings)
@@ -374,7 +375,7 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
         session, to_score, profile, preferences, profile_hash, settings
     )
 
-    matches = get_unnotified_scored_postings(session)
+    matches = get_unnotified_scored_postings(session, min_relevance_score)
     if dry_run:
         _log.info("[dry-run] Would send alerts for %d posting(s)", len(matches))
         alerts_sent = 0

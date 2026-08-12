@@ -300,14 +300,40 @@ def test_get_last_run_log_returns_most_recent(engine: Engine) -> None:
 # ── get_unnotified_scored_postings ────────────────────────────────────────────
 
 
-def test_get_unnotified_scored_postings_has_no_score_floor(engine: Engine) -> None:
-    """There is no minimum-score gate — even a very low score is returned."""
+def test_get_unnotified_scored_postings_defaults_to_no_floor(engine: Engine) -> None:
+    """Calling without min_relevance_score returns everything, even a very low score."""
     with session_scope(engine) as s:
         p, _ = upsert_posting(s, _posting_data())
         p.match_score = 5
 
     with session_scope(engine) as s:
         rows = get_unnotified_scored_postings(s)
+    assert len(rows) == 1
+
+
+def test_get_unnotified_scored_postings_excludes_below_min_relevance_score(
+    engine: Engine,
+) -> None:
+    """min_relevance_score is a domain-relevance floor, not a fit-quality gate —
+    postings below it (flagged off-field by the scoring prompt) are excluded."""
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        p.match_score = 5
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_scored_postings(s, min_relevance_score=15)
+    assert rows == []
+
+
+def test_get_unnotified_scored_postings_includes_at_min_relevance_score(
+    engine: Engine,
+) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        p.match_score = 15
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_scored_postings(s, min_relevance_score=15)
     assert len(rows) == 1
 
 

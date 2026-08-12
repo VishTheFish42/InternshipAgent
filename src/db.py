@@ -247,17 +247,23 @@ def get_last_run_log(session: Session) -> RunLog | None:
     return session.execute(select(RunLog).order_by(RunLog.id.desc()).limit(1)).scalar_one_or_none()
 
 
-def get_unnotified_scored_postings(session: Session) -> list[JobPosting]:
-    """Return every scored posting that hasn't been notified or applied yet,
-    regardless of score — there is no minimum-score gate. Every posting the
-    scrapers pick up in the software/AI/data categories gets an alert with
-    its score and missing qualifications; the user decides what's worth
-    applying to."""
+def get_unnotified_scored_postings(
+    session: Session, min_relevance_score: int = 0
+) -> list[JobPosting]:
+    """Return every scored posting at or above min_relevance_score that hasn't
+    been notified or applied yet. This is NOT a "good personal fit" gate like
+    the old min_score (70) — it exists only to cut postings the AI scorer
+    identified as outright the wrong field (e.g. a "junior" tag pulling in a
+    marketing role), which score in the 0-5 range per the scoring prompt's
+    domain gate. Every genuinely software/AI/data posting still gets an alert
+    with its score and missing qualifications, however weak the fit, and the
+    user decides what's worth applying to."""
     return list(
         session.execute(
             select(JobPosting)
             .where(
                 JobPosting.match_score.is_not(None),
+                JobPosting.match_score >= min_relevance_score,
                 JobPosting.notified == False,  # noqa: E712
                 JobPosting.applied == False,  # noqa: E712
             )

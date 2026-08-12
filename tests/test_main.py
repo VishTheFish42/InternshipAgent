@@ -519,11 +519,13 @@ def test_run_cycle_holds_matches_when_notifications_paused(
         assert session.query(JobPosting).one().notified is False
 
 
-def test_run_cycle_sends_alerts_for_low_score_postings_too(
+def test_run_cycle_sends_alerts_for_weak_fit_postings_too(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """There is no minimum-score gate: even a weak-fit posting gets notified,
-    with its missing_qualifications carried through to the outbound message info."""
+    """min_relevance_score (default 15) is a domain-relevance floor, not a
+    fit-quality gate: a weak-fit-but-real-software posting at exactly the
+    floor still gets notified, with its missing_qualifications carried
+    through to the outbound message info."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
 
@@ -570,6 +572,53 @@ def test_run_cycle_sends_alerts_for_low_score_postings_too(
     with session_scope(engine) as session:
         row = session.query(JobPosting).one()
         assert row.notified is True
+
+
+def test_run_cycle_holds_postings_below_min_relevance_score(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A posting the scorer flagged as off-domain (score below the floor,
+    e.g. a RemoteOK 'junior' role in an unrelated field) is scored and
+    stored, but not notified."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+
+    source = MagicMock(return_value=[_raw_posting(external_id="1")])
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", source)]),
+    ):
+        run_cycle_postings = _fetch_all_postings(session)[0]
+        _dedupe_and_store(session, run_cycle_postings, 7)
+        db_id = session.query(JobPosting).one().id
+
+    fake_score = ScoringResult(
+        scored=[
+            ScoredPosting(
+                external_id=str(db_id),
+                score=5,
+                reasoning="Not a software role.",
+            )
+        ],
+        input_tokens=10,
+        output_tokens=5,
+        estimated_cost_usd=0.0001,
+    )
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
+        patch("src.main.score_postings", return_value=fake_score),
+        patch("src.main.notify_matches") as mock_notify,
+    ):
+        run_cycle(session, _settings(), dry_run=False)
+
+    mock_notify.assert_not_called()
+    with session_scope(engine) as session:
+        row = session.query(JobPosting).one()
+        assert row.match_score == 5
+        assert row.notified is False
 
 
 def test_run_cycle_records_errors_from_failed_sources(
