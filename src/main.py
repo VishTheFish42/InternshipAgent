@@ -53,7 +53,7 @@ from src.notifier import (
     send_message_with_retry,
 )
 from src.resume_extractor import rebuild_profile
-from src.scrapers import adzuna, greenhouse, hn, indeed_rss, lever, remoteok
+from src.scrapers import adzuna, greenhouse, hn, indeed_rss, jsearch, lever, remoteok
 from src.scrapers.base import RawPosting
 
 _RESUMES_DIR = Path("resumes")
@@ -470,6 +470,25 @@ def run_adzuna_poll(session: Session, settings: Settings) -> None:
     _log.info("Adzuna poll: %d found, %d new", len(postings), new_count)
 
 
+def run_jsearch_poll(session: Session, settings: Settings) -> None:
+    """
+    Poll JSearch (RapidAPI) on its own weekly job, deliberately separate from
+    the main cycle — like Adzuna, its free tier is metered per month and a
+    single broad query per week leaves plenty of headroom regardless of plan.
+    This is the only source that reaches LinkedIn postings (see the LinkedIn
+    constraint in docs/requirements.md). New postings are stored unscored;
+    the next main cycle picks them up for scoring like any other source.
+    """
+    if not settings.jsearch_api_key:
+        _log.info("JSearch poll skipped: JSEARCH_API_KEY not configured")
+        return
+
+    max_posting_age_days = _load_yaml_config().get("matching", {}).get("max_posting_age_days", 7)
+    postings = jsearch.fetch(settings.jsearch_api_key)
+    new_count = _dedupe_and_store(session, postings, max_posting_age_days)
+    _log.info("JSearch poll: %d found, %d new", len(postings), new_count)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -572,6 +591,10 @@ def main() -> None:
         with session_scope(engine) as session:
             run_adzuna_poll(session, settings)
 
+    def _scheduled_jsearch() -> None:
+        with session_scope(engine) as session:
+            run_jsearch_poll(session, settings)
+
     def _scheduled_telegram_poll() -> None:
         with session_scope(engine) as session:
             process_telegram_updates(session, settings)
@@ -583,6 +606,7 @@ def main() -> None:
     )
     scheduler.add_job(_scheduled_digest, IntervalTrigger(hours=1), max_instances=1)
     scheduler.add_job(_scheduled_adzuna, IntervalTrigger(weeks=1), max_instances=1)
+    scheduler.add_job(_scheduled_jsearch, IntervalTrigger(weeks=1), max_instances=1)
     # Polls Telegram for /pause, /resume, and "Mark Applied" taps — deliberately
     # frequent and decoupled from the hourly cycle so control feels responsive.
     scheduler.add_job(_scheduled_telegram_poll, IntervalTrigger(minutes=2), max_instances=1)

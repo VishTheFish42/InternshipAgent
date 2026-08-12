@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     adzuna_app_key: str | None = None
     wellfound_api_key: str | None = None
     search_api_key: str | None = None  # SerpAPI — used for company discovery only
+    jsearch_api_key: str | None = None  # RapidAPI JSearch — only source that reaches LinkedIn
 
     # Profile: base64-encoded profile.cache.json for cloud; falls back to local file for dev
     profile_cache: str | None = None

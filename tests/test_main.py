@@ -36,6 +36,7 @@ from src.main import (
     run_adzuna_poll,
     run_cycle,
     run_digest,
+    run_jsearch_poll,
 )
 from src.matcher import ScoredPosting, ScoringResult
 from src.notifier import SendResult
@@ -693,6 +694,33 @@ def test_run_adzuna_poll_fetches_and_stores(engine: Engine) -> None:
         run_adzuna_poll(session, _settings(adzuna_app_id="app-id", adzuna_app_key="app-key"))
 
     mock_fetch.assert_called_once_with("app-id", "app-key")
+    with session_scope(engine) as session:
+        assert session.query(JobPosting).count() == 1
+
+
+# ── run_jsearch_poll ──────────────────────────────────────────────────────────
+
+
+def test_run_jsearch_poll_skipped_without_credentials(engine: Engine) -> None:
+    with (
+        session_scope(engine) as session,
+        patch("src.main.jsearch.fetch") as mock_fetch,
+    ):
+        run_jsearch_poll(session, _settings(jsearch_api_key=None))
+
+    mock_fetch.assert_not_called()
+
+
+def test_run_jsearch_poll_fetches_and_stores(engine: Engine) -> None:
+    postings = [_raw_posting(source="jsearch", external_id="1")]
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.jsearch.fetch", return_value=postings) as mock_fetch,
+    ):
+        run_jsearch_poll(session, _settings(jsearch_api_key="rapidapi-key"))
+
+    mock_fetch.assert_called_once_with("rapidapi-key")
     with session_scope(engine) as session:
         assert session.query(JobPosting).count() == 1
 

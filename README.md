@@ -4,7 +4,7 @@ An autonomous agent that continuously monitors job boards and company career pag
 
 ## What it does
 
-1. **Searches broadly** across LinkedIn, Indeed, ZipRecruiter, Handshake, and targeted company career pages using domain-level keywords (software engineering, data science, machine learning, AI) — not exact title matching. The AI handles relevance filtering.
+1. **Searches broadly** across Indeed, RemoteOK, HackerNews, Adzuna, LinkedIn/Glassdoor/ZipRecruiter (via JSearch, if configured), and targeted company career pages using domain-level keywords (software engineering, data science, machine learning, AI) — not exact title matching. The AI handles relevance filtering.
 2. **Discovers company career pages automatically** — you provide company names in plain English; the agent finds their ATS (Greenhouse, Lever, Workday, etc.) and monitors their job boards directly.
 3. **Reads your resume** — drop a PDF (or multiple) into the `/resumes` folder; Claude extracts your skills, experience, and projects into a unified profile automatically. No manual YAML editing.
 4. **Deduplicates** postings so you never get the same alert twice.
@@ -22,7 +22,7 @@ An autonomous agent that continuously monitors job boards and company career pag
 config/companies.yaml ──► ATS Discoverer ──► per-company ATS scrapers (Tier 1)
                                                           │
       Indeed RSS · Adzuna · YC ────────────────────────── ┤  (Tier 2)
-      HackerNews · RemoteOK · Dice                        │
+      HackerNews · RemoteOK · Dice · JSearch (LinkedIn)   │
                                                           ▼
                                               Cross-source Deduplicator
                                                           │
@@ -184,7 +184,11 @@ You don't need to list every company. The agent uses a **two-tier strategy**:
 | Tier | Sources | What it covers | Speed |
 |---|---|---|---|
 | **Tier 1** — Direct monitoring | Greenhouse · Lever · Custom scrapers | ~150 companies in your `companies.yaml`, checked at their career page directly | Fast: within one poll cycle |
-| **Tier 2** — Broad search | Indeed RSS · Adzuna · YC · HackerNews · RemoteOK · Dice | Every company posting on Indeed, RemoteOK, Dice, YC-batch startups, or HN's monthly hiring thread | Slightly slower: depends on board indexing |
+| **Tier 2** — Broad search | Indeed RSS · Adzuna · HackerNews · RemoteOK · JSearch | Every company posting on Indeed, RemoteOK, HN's monthly hiring thread, or — via JSearch — LinkedIn, Glassdoor, and ZipRecruiter | Slightly slower: depends on board indexing |
+
+**LinkedIn coverage:** direct LinkedIn scraping isn't done — LinkedIn actively blocks it and prohibits it in their Terms of Service. **JSearch** (RapidAPI) is the only source that reaches LinkedIn postings, via a legitimate metered API rather than scraping. It requires a `JSEARCH_API_KEY` (see Environment variables below) and polls on its own weekly job, same pattern as Adzuna, to stay well within any RapidAPI plan's quota. Without a key set, this source is silently skipped — everything else still runs.
+
+**Note:** the YC and Dice scrapers exist in `src/scrapers/` but aren't wired into the poll schedule yet (`_SOURCES` in `main.py`) — they're dormant, not actively polling, despite appearing in earlier design docs.
 
 **Cross-source deduplication** ensures that if the same posting appears on multiple platforms (e.g., a Stripe job found via Indeed RSS *and* via the Greenhouse direct monitor), you get exactly one alert. The agent deduplicates by canonical application URL, then by company + title as a fallback.
 
@@ -200,12 +204,14 @@ See `.env.example` for all required variables. Key ones:
 | `TELEGRAM_CHAT_ID` | Your chat ID to receive alerts (find via `getUpdates`, see `.env.example`) |
 | `ANTHROPIC_API_KEY` | Claude API key for resume extraction + job scoring |
 | `PROFILE_CACHE` | Base64-encoded `profile.cache.json` — set via `--rebuild-profile` output |
+| `COMPANIES_CONFIG` | Base64-encoded `config/companies.yaml` — set via `--sync-companies` output; required for Tier 1 monitoring in production, since `companies.yaml` is gitignored |
 | `ADZUNA_APP_ID` | Adzuna API app ID |
 | `ADZUNA_APP_KEY` | Adzuna API key |
+| `JSEARCH_API_KEY` | RapidAPI JSearch key — the only source that reaches LinkedIn postings |
 | `SEARCH_API_KEY` | SerpAPI key — used only for company ATS discovery, not job searching |
 | `DATABASE_URL` | SQLite path or Postgres URL |
 | `RUN_INTERVAL_MINUTES` | How often to poll (default: `60`) |
-| `BURST_THRESHOLD` | Min matches in one cycle to trigger a batched message instead of individual ones — applies to both full and partial matches (default: `20`) |
+| `BURST_THRESHOLD` | Min postings in one cycle to trigger a batched message instead of individual ones (default: `20`) |
 
 ## CLI reference
 
@@ -214,6 +220,7 @@ python -m src.main                      # start scheduler (runs every 60 min)
 python -m src.main --run-once           # single run, then exit
 python -m src.main --dry-run            # full pipeline but no message sent
 python -m src.main --rebuild-profile    # re-extract profile from /resumes PDFs
+python -m src.main --sync-companies     # re-encode config/companies.yaml for Railway
 python -m src.main --rescore            # re-score all stored postings vs. current profile
 python -m src.db init                   # initialize database schema
 python -m src.db stats                  # print summary: postings, alerts, unresolved companies, cost
