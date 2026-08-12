@@ -472,12 +472,15 @@ def run_adzuna_poll(session: Session, settings: Settings) -> None:
 
 def run_jsearch_poll(session: Session, settings: Settings) -> None:
     """
-    Poll JSearch (RapidAPI) on its own weekly job, deliberately separate from
-    the main cycle — like Adzuna, its free tier is metered per month and a
-    single broad query per week leaves plenty of headroom regardless of plan.
-    This is the only source that reaches LinkedIn postings (see the LinkedIn
-    constraint in docs/requirements.md). New postings are stored unscored;
-    the next main cycle picks them up for scoring like any other source.
+    Poll JSearch (RapidAPI) on its own 4-hourly job, deliberately separate
+    from the main cycle — like Adzuna, it's metered per month, and a single
+    broad query every 4 hours is ~180 requests/month, comfortably under a
+    200/month free-tier quota (every 2 hours would be ~360/month — over it).
+    Adjust the interval to match your actual RapidAPI plan's quota if it
+    differs. This is the only source that reaches LinkedIn postings (see the
+    LinkedIn constraint in docs/requirements.md). New postings are stored
+    unscored; the next main cycle picks them up for scoring like any other
+    source.
     """
     if not settings.jsearch_api_key:
         _log.info("JSearch poll skipped: JSEARCH_API_KEY not configured")
@@ -606,7 +609,7 @@ def main() -> None:
     )
     scheduler.add_job(_scheduled_digest, IntervalTrigger(hours=1), max_instances=1)
     scheduler.add_job(_scheduled_adzuna, IntervalTrigger(weeks=1), max_instances=1)
-    scheduler.add_job(_scheduled_jsearch, IntervalTrigger(weeks=1), max_instances=1)
+    scheduler.add_job(_scheduled_jsearch, IntervalTrigger(hours=4), max_instances=1)
     # Polls Telegram for /pause, /resume, and "Mark Applied" taps — deliberately
     # frequent and decoupled from the hourly cycle so control feels responsive.
     scheduler.add_job(_scheduled_telegram_poll, IntervalTrigger(minutes=2), max_instances=1)
