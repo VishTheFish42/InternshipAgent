@@ -471,7 +471,7 @@ Score 0–100. Claude also identifies `missing_qualifications`: specific skills,
 
 ### 8.2a Partial matches
 
-A posting scoring in `[partial_match_min_score, min_score)` (defaults: 50–69) is a near-miss, not a full alert. It's only surfaced if `len(missing_qualifications) <= max_missing_qualifications` (default 5) — few enough gaps that a resume update is a plausible fix, not a fundamentally different role. Qualifying postings across a cycle are bundled into **one batched message**, not one per posting (see §9.1a). A posting gets a partial-match notice at most once (`partial_notified` flag) — this is tracked separately from `notified`, so if a later profile update (new resume, new project) pushes the same posting's score above `min_score` on rescore, it's still eligible for a real full-match alert.
+A posting scoring in `[partial_match_min_score, min_score)` (defaults: 50–69) is a near-miss, not a full alert. It's only surfaced if `len(missing_qualifications) <= max_missing_qualifications` (default 5) — few enough gaps that a resume update is a plausible fix, not a fundamentally different role. Qualifying postings are routed through the same individual/burst logic as full matches (§9.1a) — one message per posting below `BURST_THRESHOLD`, one batched message at or above it. A posting gets a partial-match notice at most once (`partial_notified` flag) — this is tracked separately from `notified`, so if a later profile update (new resume, new project) pushes the same posting's score above `min_score` on rescore, it's still eligible for a real full-match alert.
 
 ### 8.3 Model selection
 
@@ -502,9 +502,9 @@ Total: well within the $10/month budget.
 
 ### 9.1 Notification modes
 
-The notifier operates in two modes per polling cycle depending on how many matches are found:
+The notifier operates in two modes per polling cycle depending on how many matches are found. This applies identically to full matches (`notify_matches()`) and partial matches (`notify_partial_matches()`) — both are routed by the same `BURST_THRESHOLD`, both paced the same way in individual mode.
 
-**Individual mode** (< `BURST_THRESHOLD` matches, default 5): one message per match.
+**Individual mode** (< `BURST_THRESHOLD` matches, default 20): one message per match, each including a direct apply link. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 matches takes ~15 seconds to fully notify, not instant.
 
 ```
 [InternAgent] Stripe · Software Engineering Intern · Remote
@@ -512,27 +512,39 @@ Match: 88 — Strong Python/backend fit, welcoming undergrads
 Apply: https://boards.greenhouse.io/stripe/jobs/123456
 ```
 
-**Burst mode** (≥ `BURST_THRESHOLD` matches): a single summary message listing all matches.
+**Burst mode** (≥ `BURST_THRESHOLD` matches): a single summary message listing all matches, each with its own apply link, capped at 10 lines shown (`+ N more — run db stats`) to stay within Telegram's message length limit on a genuinely high-volume cycle.
 
 ```
-[InternAgent] 12 new matches this cycle
+[InternAgent] 25 new matches this cycle
  1. Stripe · SWE Intern · Remote (92)
+    Apply: https://boards.greenhouse.io/stripe/jobs/123456
  2. Anthropic · ML Intern · SF (89)
- 3. Scale AI · Data Eng Intern (85)
- + 9 more — run `db stats` to see all
+    Apply: https://jobs.lever.co/anthropic/abc123
+ + 23 more — run `db stats` to see all
 ```
 
-The full list is always stored in the database. `db stats` shows everything regardless of which mode was used. `BURST_THRESHOLD` is configurable via env var.
+The full list is always stored in the database. `db stats` shows everything regardless of which mode was used. `BURST_THRESHOLD` is configurable via env var — the default (20) was chosen deliberately high so individual messages (with apply links) are the normal experience, and batching only kicks in as a safety net on unusually high-volume cycles, not as the default behavior.
 
-### 9.1a Partial-match mode (separate from the above)
+### 9.1a Partial-match mode
 
-Independent of individual/burst mode, one additional batched message is sent per cycle if there are any qualifying partial matches (§8.2a) — always one message covering every partial match found that cycle, never split into individual/burst like full matches:
+Uses the exact same individual/burst routing as §9.1, on the same `BURST_THRESHOLD`. Individual partial-match messages include the missing-qualifications list and an apply link:
+
+```
+[InternAgent] Partial match: Acme Corp · SWE Intern
+Score: 68 — missing: Kubernetes
+Apply: https://boards.greenhouse.io/acme/jobs/1
+```
+
+Burst mode (≥ `BURST_THRESHOLD` partial matches in one cycle) batches them the same way full matches do:
 
 ```
 [InternAgent] 3 partial matches this cycle
  1. Acme Corp · SWE Intern (68) — missing: Kubernetes
+    Apply: https://boards.greenhouse.io/acme/jobs/1
  2. Widget Co · Data Intern (62) — missing: PySpark, Airflow
+    Apply: https://boards.greenhouse.io/widget/jobs/2
  3. Bolt Labs · Backend Intern (55) — missing: Go, gRPC
+    Apply: https://boards.greenhouse.io/bolt/jobs/3
 Consider updating your resume/profile if you notice a pattern.
 ```
 

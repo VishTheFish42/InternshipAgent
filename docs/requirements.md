@@ -63,14 +63,15 @@
 | ID | Requirement |
 |---|---|
 | FR-30 | The system SHALL send a Telegram message to the configured chat when a posting meets the match threshold. |
-| FR-30a | If the number of qualifying matches in a single polling cycle is below `BURST_THRESHOLD` (default: 5), the system SHALL send one individual message per match. If at or above the threshold, it SHALL send a single batched summary message listing all matches ranked by score, with a note to check `db stats` for details. |
+| FR-30a | If the number of qualifying matches in a single polling cycle is below `BURST_THRESHOLD` (default: 20), the system SHALL send one individual message per match, each containing a direct application link, paced to respect Telegram's per-chat rate limit. If at or above the threshold, it SHALL send a single batched summary message listing all matches ranked by score (each with its own application link), with a note to check `db stats` for details. |
+| FR-31a | Every individual and batched full-match message SHALL contain a direct application URL per posting. |
 | FR-31 | Each individual message SHALL contain: company name, role title, location/remote status, match score, and direct application URL. |
 | FR-32 | The system SHALL send a digest message on a configurable interval (default: every hour) containing: number of new postings found and alerts sent since the last digest, and names of unresolved companies. |
 | FR-33 | The digest message is in addition to real-time alerts, not a replacement. |
 | FR-34 | All sent notifications SHALL be logged with timestamp and Telegram message ID. |
 | FR-34a | A posting scoring in `[profile.yaml → matching.partial_match_min_score, min_score)` SHALL be treated as a "partial match" and SHALL NOT trigger a full-match alert. |
 | FR-34b | A partial match SHALL only be surfaced if its `missing_qualifications` count is `<= profile.yaml → matching.max_missing_qualifications`. Postings missing more than that SHALL be silently skipped. |
-| FR-34c | All qualifying partial matches in a single polling cycle SHALL be sent as exactly one batched message (never split into individual messages), listing company, title, score, and missing qualifications for each, ranked by score. |
+| FR-34c | Qualifying partial matches SHALL be routed by the same individual/burst logic and `BURST_THRESHOLD` as full matches (FR-30a): one message per posting below the threshold (each including its missing-qualifications list and a direct application link), one batched message at or above it. |
 | FR-34d | A posting SHALL receive at most one partial-match notice. This SHALL be tracked independently of full-match `notified` status, so that a later rescore (e.g. after a profile update) that pushes the same posting's score above `min_score` SHALL still trigger a full-match alert. |
 
 ### 1.7 Scheduling & CLI

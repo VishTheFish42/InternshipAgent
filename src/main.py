@@ -45,8 +45,10 @@ from src.notifier import (
     format_burst_message,
     format_digest,
     format_individual_message,
+    format_partial_match_individual_message,
     format_partial_match_message,
     notify_matches,
+    notify_partial_matches,
     send_message_with_retry,
 )
 from src.resume_extractor import rebuild_profile
@@ -249,23 +251,45 @@ def _to_partial_match_info(posting: JobPosting) -> PartialMatchInfo:
 def _notify_partial_matches_and_mark(
     session: Session, partial_matches: list[JobPosting], settings: Settings
 ) -> int:
-    """Send one batched message covering all of this cycle's partial matches
-    and mark each as partial_notified. Returns the count successfully sent."""
+    """Send partial-match notices (individual or burst mode, same threshold
+    and pacing as full matches) and mark each as partial_notified. Returns
+    the number of postings successfully notified."""
     if not partial_matches:
         return 0
 
     bot_token = settings.telegram_bot_token or ""
     chat_id = settings.telegram_chat_id or ""
     infos = [_to_partial_match_info(p) for p in partial_matches]
-    body = format_partial_match_message(infos)
-    result = send_message_with_retry(bot_token, chat_id, body)
+    results = notify_partial_matches(
+        bot_token,
+        infos,
+        chat_id=chat_id,
+        burst_threshold=settings.burst_threshold,
+    )
 
-    if not result.success:
-        return 0
+    alerts_sent = 0
+    is_burst = len(partial_matches) >= settings.burst_threshold
+    if is_burst:
+        result = results[0]
+        if result.success:
+            body = format_partial_match_message(infos)
+            for posting in partial_matches:
+                mark_partial_notified(session, posting.id, chat_id, body, str(result.message_id))
+                alerts_sent += 1
+    else:
+        for posting, info, result in zip(partial_matches, infos, results, strict=True):
+            if result.success:
+                body = format_partial_match_individual_message(
+                    info.company,
+                    info.title,
+                    info.score,
+                    info.missing_qualifications,
+                    info.apply_url,
+                )
+                mark_partial_notified(session, posting.id, chat_id, body, str(result.message_id))
+                alerts_sent += 1
 
-    for posting in partial_matches:
-        mark_partial_notified(session, posting.id, chat_id, body, str(result.message_id))
-    return len(partial_matches)
+    return alerts_sent
 
 
 # ── Run cycle ─────────────────────────────────────────────────────────────────

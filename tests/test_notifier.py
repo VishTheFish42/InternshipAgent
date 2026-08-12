@@ -12,8 +12,10 @@ from src.notifier import (
     format_burst_message,
     format_digest,
     format_individual_message,
+    format_partial_match_individual_message,
     format_partial_match_message,
     notify_matches,
+    notify_partial_matches,
     send_message,
     send_message_with_retry,
 )
@@ -136,6 +138,12 @@ def test_format_burst_message_includes_count_and_ranks_by_score():
     assert body.index("Omega") < body.index("Zeta")
 
 
+def test_format_burst_message_includes_apply_link_per_item():
+    matches = [_match(company="Stripe")]
+    body = format_burst_message(matches)
+    assert "Apply: https://boards.greenhouse.io/stripe/jobs/123456" in body
+
+
 def test_format_burst_message_caps_at_ten_lines_with_overflow_note():
     matches = [_match(company=f"Company{i}", score=i) for i in range(15)]
     body = format_burst_message(matches)
@@ -191,6 +199,32 @@ def test_format_partial_match_message_caps_at_ten_lines_with_overflow_note():
 def test_format_partial_match_message_includes_resume_tip():
     body = format_partial_match_message([_partial_match()])
     assert "resume" in body.lower()
+
+
+def test_format_partial_match_message_includes_apply_link_per_item():
+    body = format_partial_match_message([_partial_match()])
+    assert "Apply: https://boards.greenhouse.io/acme/jobs/1" in body
+
+
+# ── format_partial_match_individual_message ───────────────────────────────────
+
+
+def test_format_partial_match_individual_message_includes_all_fields():
+    body = format_partial_match_individual_message(
+        "Acme Corp", "SWE Intern", 62, ["Kubernetes", "GraphQL"], "https://apply.example/1"
+    )
+    assert "Acme Corp" in body
+    assert "SWE Intern" in body
+    assert "62" in body
+    assert "Kubernetes, GraphQL" in body
+    assert "https://apply.example/1" in body
+
+
+def test_format_partial_match_individual_message_handles_empty_missing_list():
+    body = format_partial_match_individual_message(
+        "Acme", "Intern", 60, [], "https://apply.example/1"
+    )
+    assert "none listed" in body
 
 
 # ── format_digest ──────────────────────────────────────────────────────────────
@@ -339,3 +373,71 @@ def test_notify_matches_burst_mode_at_or_above_threshold():
     assert mock_post.call_count == 1
     body = mock_post.call_args.kwargs["json"]["text"]
     assert "5 new matches" in body
+
+
+def test_notify_matches_individual_mode_paces_sends():
+    matches = [_match(company="A"), _match(company="B"), _match(company="C")]
+
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()),
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_called_with(1.0)
+
+
+def test_notify_matches_burst_mode_does_not_pace_sends():
+    matches = [_match(company=f"C{i}") for i in range(5)]
+
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()),
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    mock_sleep.assert_not_called()
+
+
+# ── notify_partial_matches ────────────────────────────────────────────────────
+
+
+def test_notify_partial_matches_empty_list_sends_nothing():
+    with patch("src.notifier.httpx.post") as mock_post:
+        results = notify_partial_matches("bot-token", [], chat_id="12345", burst_threshold=5)
+    assert results == []
+    mock_post.assert_not_called()
+
+
+def test_notify_partial_matches_individual_mode_below_threshold():
+    matches = [_partial_match(company="A"), _partial_match(company="B")]
+
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        results = notify_partial_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    assert len(results) == 2
+    assert mock_post.call_count == 2
+    mock_sleep.assert_called_once_with(1.0)
+
+    first_body = mock_post.call_args_list[0].kwargs["json"]["text"]
+    assert "Partial match: A" in first_body
+
+
+def test_notify_partial_matches_burst_mode_at_or_above_threshold():
+    matches = [_partial_match(company=f"C{i}") for i in range(5)]
+
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        results = notify_partial_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    assert len(results) == 1
+    assert mock_post.call_count == 1
+    mock_sleep.assert_not_called()
+    body = mock_post.call_args.kwargs["json"]["text"]
+    assert "5 partial matches" in body

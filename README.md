@@ -29,8 +29,8 @@ config/companies.yaml ──► ATS Discoverer ──► per-company ATS scraper
                                                           │
                                                    AI Scorer (Claude)
                                                           │
-                                          1 match → individual message
-                                          5+ matches → batched summary message
+                                    < BURST_THRESHOLD matches → individual messages
+                                    >= BURST_THRESHOLD matches → batched summary message
                                                           │
                                                 Telegram Bot API ──► your phone
 ```
@@ -138,7 +138,7 @@ matching:
   digest_enabled: true # send a summary message every hour in addition to real-time alerts
 ```
 
-**Partial matches:** postings scoring in `[partial_match_min_score, min_score)` are near-misses, not full alerts. The AI scorer also names any specific skills/tools/requirements from the posting your profile doesn't show (`missing_qualifications`). If a posting's gap list is `max_missing_qualifications` items or fewer, it's bundled into a single batched message per cycle — one message covering every partial match found, not one per posting — so you can spot a pattern (e.g. "Kubernetes keeps coming up") worth adding to your resume. Each partial match is only ever notified once; if a later profile update pushes its score above `min_score`, it still triggers a normal full-match alert.
+**Partial matches:** postings scoring in `[partial_match_min_score, min_score)` are near-misses, not full alerts. The AI scorer also names any specific skills/tools/requirements from the posting your profile doesn't show (`missing_qualifications`). If a posting's gap list is `max_missing_qualifications` items or fewer, it's surfaced — one Telegram message per posting by default, each including the missing-qualifications list and a direct apply link — so you can spot a pattern (e.g. "Kubernetes keeps coming up") worth adding to your resume. Each partial match is only ever notified once; if a later profile update pushes its score above `min_score`, it still triggers a normal full-match alert.
 
 ## Adding companies to monitor
 
@@ -193,7 +193,7 @@ See `.env.example` for all required variables. Key ones:
 | `SEARCH_API_KEY` | SerpAPI key — used only for company ATS discovery, not job searching |
 | `DATABASE_URL` | SQLite path or Postgres URL |
 | `RUN_INTERVAL_MINUTES` | How often to poll (default: `60`) |
-| `BURST_THRESHOLD` | Min matches in one cycle to trigger a batched message instead of individual ones (default: `5`) |
+| `BURST_THRESHOLD` | Min matches in one cycle to trigger a batched message instead of individual ones — applies to both full and partial matches (default: `20`) |
 
 ## CLI reference
 

@@ -21,6 +21,7 @@ _APP_NAME = "InternAgent"
 _MAX_MESSAGE_CHARS = 4096  # Telegram's hard per-message limit
 _BURST_MAX_LINES = 10
 _RETRY_DELAY_SECONDS = 300
+_INDIVIDUAL_SEND_DELAY_SECONDS = 1.0  # Telegram's documented per-chat rate limit is ~1 msg/sec
 _API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
@@ -95,6 +96,7 @@ def format_burst_message(matches: list[MatchInfo]) -> str:
     for i, m in enumerate(shown, start=1):
         loc = f" · {m.location}" if m.location else ""
         lines.append(f" {i}. {m.company} · {m.title}{loc} ({m.score})")
+        lines.append(f"    Apply: {m.apply_url}")
 
     remaining = len(ranked) - len(shown)
     if remaining > 0:
@@ -103,13 +105,30 @@ def format_burst_message(matches: list[MatchInfo]) -> str:
     return "\n".join(lines)
 
 
+def format_partial_match_individual_message(
+    company: str,
+    title: str,
+    score: int,
+    missing_qualifications: list[str],
+    apply_url: str,
+) -> str:
+    """Format a single partial-match message — used in individual mode
+    (fewer than burst_threshold partial matches in the cycle)."""
+    missing = ", ".join(missing_qualifications) if missing_qualifications else "none listed"
+    return (
+        f"[{_APP_NAME}] Partial match: {company} · {title}\n"
+        f"Score: {score} — missing: {missing}\n"
+        f"Apply: {apply_url}"
+    )
+
+
 def format_partial_match_message(matches: list[PartialMatchInfo]) -> str:
     """
     Format a single batched message listing this cycle's partial matches —
     postings that scored below the full match threshold but close, with few
     enough missing qualifications to be a plausible resume-tweak target.
-    One message per cycle, not one per posting, same capped/truncated shape
-    as format_burst_message.
+    Used in burst mode (burst_threshold or more partial matches in the cycle),
+    same capped/truncated shape as format_burst_message.
     """
     ranked = sorted(matches, key=lambda m: m.score, reverse=True)
     lines = [
@@ -120,6 +139,7 @@ def format_partial_match_message(matches: list[PartialMatchInfo]) -> str:
     for i, m in enumerate(shown, start=1):
         missing = ", ".join(m.missing_qualifications) if m.missing_qualifications else "none listed"
         lines.append(f" {i}. {m.company} · {m.title} ({m.score}) — missing: {missing}")
+        lines.append(f"    Apply: {m.apply_url}")
 
     remaining = len(ranked) - len(shown)
     if remaining > 0:
@@ -211,6 +231,7 @@ def notify_matches(
     """
     Route matches to individual or burst mode based on burst_threshold, and send.
     Returns one SendResult per message actually sent (one for burst mode).
+    Individual sends are paced to respect Telegram's per-chat rate limit.
     """
     if not matches:
         return []
@@ -219,13 +240,51 @@ def notify_matches(
         body = format_burst_message(matches)
         return [send_message_with_retry(bot_token, chat_id, body)]
 
-    return [
-        send_message_with_retry(
-            bot_token,
-            chat_id,
-            format_individual_message(
-                m.company, m.title, m.location, m.score, m.reasoning, m.apply_url
-            ),
+    results = []
+    for i, m in enumerate(matches):
+        if i > 0:
+            time.sleep(_INDIVIDUAL_SEND_DELAY_SECONDS)
+        results.append(
+            send_message_with_retry(
+                bot_token,
+                chat_id,
+                format_individual_message(
+                    m.company, m.title, m.location, m.score, m.reasoning, m.apply_url
+                ),
+            )
         )
-        for m in matches
-    ]
+    return results
+
+
+def notify_partial_matches(
+    bot_token: str,
+    matches: list[PartialMatchInfo],
+    *,
+    chat_id: str,
+    burst_threshold: int,
+) -> list[SendResult]:
+    """
+    Route partial matches to individual or burst mode based on burst_threshold,
+    and send. Mirrors notify_matches — same threshold, same pacing.
+    """
+    if not matches:
+        return []
+
+    if len(matches) >= burst_threshold:
+        body = format_partial_match_message(matches)
+        return [send_message_with_retry(bot_token, chat_id, body)]
+
+    results = []
+    for i, m in enumerate(matches):
+        if i > 0:
+            time.sleep(_INDIVIDUAL_SEND_DELAY_SECONDS)
+        results.append(
+            send_message_with_retry(
+                bot_token,
+                chat_id,
+                format_partial_match_individual_message(
+                    m.company, m.title, m.score, m.missing_qualifications, m.apply_url
+                ),
+            )
+        )
+    return results

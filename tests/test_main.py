@@ -353,7 +353,7 @@ def test_notify_partial_matches_and_mark_empty_list_returns_zero(engine: Engine)
     assert count == 0
 
 
-def test_notify_partial_matches_and_mark_sends_one_batched_message(engine: Engine) -> None:
+def test_notify_partial_matches_and_mark_individual_mode_marks_each_posting(engine: Engine) -> None:
     with session_scope(engine) as session:
         postings = []
         for i in range(3):
@@ -365,21 +365,47 @@ def test_notify_partial_matches_and_mark_sends_one_batched_message(engine: Engin
             record_score(session, p.id, 60, "x", "hash", missing_qualifications=["Kubernetes"])
             postings.append(p)
 
-        with patch(
-            "src.main.send_message_with_retry",
-            return_value=SendResult(success=True, message_id=1, error=None),
-        ) as mock_send:
-            count = _notify_partial_matches_and_mark(session, postings, _settings())
+        fake_results = [SendResult(success=True, message_id=i, error=None) for i in range(3)]
+        with patch("src.main.notify_partial_matches", return_value=fake_results) as mock_notify:
+            count = _notify_partial_matches_and_mark(
+                session, postings, _settings(burst_threshold=5)
+            )
 
     assert count == 3
-    mock_send.assert_called_once()
-    body = mock_send.call_args.args[2]
-    assert "3 partial matches" in body
+    mock_notify.assert_called_once()
 
     with session_scope(engine) as session:
         rows = session.query(JobPosting).all()
         assert all(r.partial_notified for r in rows)
         assert all(not r.notified for r in rows)
+
+
+def test_notify_partial_matches_and_mark_burst_mode_marks_all_from_single_result(
+    engine: Engine,
+) -> None:
+    with session_scope(engine) as session:
+        postings = []
+        for i in range(5):
+            p = _stored_posting(
+                session,
+                external_id=str(i),
+                apply_url=f"https://boards.greenhouse.io/stripe/jobs/{i}",
+            )
+            record_score(session, p.id, 60, "x", "hash", missing_qualifications=["Kubernetes"])
+            postings.append(p)
+
+        with patch(
+            "src.main.notify_partial_matches",
+            return_value=[SendResult(success=True, message_id=999, error=None)],
+        ):
+            count = _notify_partial_matches_and_mark(
+                session, postings, _settings(burst_threshold=5)
+            )
+
+    assert count == 5
+    with session_scope(engine) as session:
+        rows = session.query(JobPosting).all()
+        assert all(r.partial_notified for r in rows)
 
 
 def test_notify_partial_matches_and_mark_does_not_mark_on_send_failure(engine: Engine) -> None:
@@ -388,10 +414,10 @@ def test_notify_partial_matches_and_mark_does_not_mark_on_send_failure(engine: E
         record_score(session, p.id, 60, "x", "hash")
 
         with patch(
-            "src.main.send_message_with_retry",
-            return_value=SendResult(success=False, message_id=None, error="failed"),
+            "src.main.notify_partial_matches",
+            return_value=[SendResult(success=False, message_id=None, error="failed")],
         ):
-            count = _notify_partial_matches_and_mark(session, [p], _settings())
+            count = _notify_partial_matches_and_mark(session, [p], _settings(burst_threshold=5))
 
     assert count == 0
     with session_scope(engine) as session:
@@ -548,16 +574,16 @@ def test_run_cycle_sends_partial_match_digest(
         patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
         patch("src.main.score_postings", return_value=fake_score),
         patch(
-            "src.main.send_message_with_retry",
-            return_value=SendResult(success=True, message_id=1, error=None),
-        ) as mock_send,
+            "src.main.notify_partial_matches",
+            return_value=[SendResult(success=True, message_id=1, error=None)],
+        ) as mock_notify,
     ):
         run_cycle(session, _settings(), dry_run=False)
 
-    mock_send.assert_called_once()
-    body = mock_send.call_args.args[2]
-    assert "1 partial match" in body
-    assert "Kubernetes" in body
+    mock_notify.assert_called_once()
+    sent_infos = mock_notify.call_args.args[1]
+    assert len(sent_infos) == 1
+    assert sent_infos[0].missing_qualifications == ["Kubernetes"]
 
     with session_scope(engine) as session:
         row = session.query(JobPosting).one()
@@ -586,10 +612,12 @@ def test_run_cycle_dry_run_never_sends_partial_match_digest(
         patch("src.main._SOURCES", [("greenhouse", source)]),
         patch("src.main.score_postings", return_value=fake_score),
         patch("src.main.send_message_with_retry") as mock_send,
+        patch("src.main.notify_partial_matches") as mock_notify_partial,
     ):
         run_cycle(session, _settings(), dry_run=True)
 
     mock_send.assert_not_called()
+    mock_notify_partial.assert_not_called()
 
 
 def test_run_cycle_records_errors_from_failed_sources(

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     run_interval_minutes: int = 60
 
     # Notifications
-    burst_threshold: int = 5
+    burst_threshold: int = 20
 
     # Claude models
     claude_scoring_model: str = "claude-haiku-4-5-20251001"
