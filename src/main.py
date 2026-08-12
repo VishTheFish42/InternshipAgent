@@ -24,6 +24,7 @@ from src.config import Settings, get_settings
 from src.db import (
     JobPosting,
     Notification,
+    get_bot_state,
     get_last_run_log,
     get_unnotified_above_threshold,
     get_unnotified_partial_matches,
@@ -32,21 +33,26 @@ from src.db import (
     get_unscored_postings,
     init_db,
     log_run,
+    mark_applied,
     mark_notified,
     mark_partial_notified,
     record_score,
     session_scope,
+    set_notifications_paused,
+    update_last_telegram_update_id,
 )
 from src.deduplicator import upsert_deduped
 from src.matcher import ScoringResult, hash_profile, score_postings
 from src.notifier import (
     MatchInfo,
     PartialMatchInfo,
+    answer_callback_query,
     format_burst_message,
     format_digest,
     format_individual_message,
     format_partial_match_individual_message,
     format_partial_match_message,
+    get_updates,
     notify_matches,
     notify_partial_matches,
     send_message_with_retry,
@@ -110,10 +116,23 @@ def _fetch_all_postings(session: Session) -> tuple[list[RawPosting], list[str], 
     return postings, polled, errors
 
 
-def _dedupe_and_store(session: Session, raw_postings: list[RawPosting]) -> int:
-    """Insert postings through the dedup pipeline. Returns count of new rows."""
+def _is_fresh(posted_at: datetime | None, max_age_days: int) -> bool:
+    """True if within the freshness window, or if posted_at is unreliable/absent
+    for this source (benefit of the doubt rather than silently dropping it)."""
+    if posted_at is None:
+        return True
+    return posted_at >= _now() - timedelta(days=max_age_days)
+
+
+def _dedupe_and_store(
+    session: Session, raw_postings: list[RawPosting], max_posting_age_days: int
+) -> int:
+    """Insert postings through the dedup pipeline, skipping anything older than
+    max_posting_age_days. Returns count of new rows."""
     new_count = 0
     for rp in raw_postings:
+        if not _is_fresh(rp.posted_at, max_posting_age_days):
+            continue
         data = {
             "source": rp.source,
             "external_id": rp.external_id,
@@ -193,6 +212,7 @@ def _to_match_info(posting: JobPosting) -> MatchInfo:
         score=posting.match_score or 0,
         reasoning=posting.match_reasoning or "",
         apply_url=posting.apply_url or posting.url,
+        posting_id=posting.id,
     )
 
 
@@ -245,6 +265,7 @@ def _to_partial_match_info(posting: JobPosting) -> PartialMatchInfo:
         score=posting.match_score or 0,
         missing_qualifications=list(posting.missing_qualifications or []),
         apply_url=posting.apply_url or posting.url,
+        posting_id=posting.id,
     )
 
 
@@ -292,6 +313,73 @@ def _notify_partial_matches_and_mark(
     return alerts_sent
 
 
+# ── Inbound Telegram commands ────────────────────────────────────────────────
+
+
+def _chat_id_matches(update_chat_id: Any, configured_chat_id: str) -> bool:
+    return str(update_chat_id) == str(configured_chat_id)
+
+
+def process_telegram_updates(session: Session, settings: Settings) -> None:
+    """
+    Short-poll Telegram for anything sent since the last cursor: "Mark Applied"
+    button taps (callback_query, data="applied:<posting_id>") and /pause,
+    /resume commands. Ignores updates from any chat other than the configured
+    one — the bot token is private, but this keeps a stray discovery of the
+    bot username from being able to toggle notifications.
+    """
+    bot_token = settings.telegram_bot_token
+    chat_id = settings.telegram_chat_id
+    if not bot_token or not chat_id:
+        return
+
+    state = get_bot_state(session)
+    offset = state.last_update_id + 1 if state.last_update_id is not None else None
+    updates = get_updates(bot_token, offset=offset)
+
+    max_update_id = state.last_update_id
+    for update in updates:
+        update_id = update.get("update_id")
+        if update_id is not None and (max_update_id is None or update_id > max_update_id):
+            max_update_id = update_id
+
+        callback = update.get("callback_query")
+        if callback is not None:
+            cb_chat = callback.get("message", {}).get("chat", {})
+            if not _chat_id_matches(cb_chat.get("id"), chat_id):
+                continue
+            data = callback.get("data", "")
+            if data.startswith("applied:"):
+                try:
+                    posting_id = int(data.split(":", 1)[1])
+                    mark_applied(session, posting_id)
+                    answer_callback_query(bot_token, callback["id"], text="Marked applied ✅")
+                except (ValueError, LookupError) as exc:
+                    _log.warning("Failed to process applied callback %r: %s", data, exc)
+                    answer_callback_query(
+                        bot_token, callback["id"], text="Couldn't mark that — try again"
+                    )
+            continue
+
+        message = update.get("message")
+        if message is None:
+            continue
+        if not _chat_id_matches(message.get("chat", {}).get("id"), chat_id):
+            continue
+        text = (message.get("text") or "").strip().lower()
+        if text == "/pause":
+            set_notifications_paused(session, True)
+            send_message_with_retry(
+                bot_token, chat_id, "Notifications paused. Send /resume to turn them back on."
+            )
+        elif text == "/resume":
+            set_notifications_paused(session, False)
+            send_message_with_retry(bot_token, chat_id, "Notifications resumed.")
+
+    if max_update_id is not None:
+        update_last_telegram_update_id(session, max_update_id)
+
+
 # ── Run cycle ─────────────────────────────────────────────────────────────────
 
 
@@ -310,17 +398,19 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
                 seed_result.already_known,
             )
 
-    raw_postings, sources_polled, errors = _fetch_all_postings(session)
-    postings_found = len(raw_postings)
-    postings_new = _dedupe_and_store(session, raw_postings)
-
-    profile = settings.load_profile()
     config = _load_yaml_config()
     preferences = config.get("preferences", {})
     matching = config.get("matching", {})
     min_score = matching.get("min_score", 70)
     partial_match_min_score = matching.get("partial_match_min_score", 50)
     max_missing_qualifications = matching.get("max_missing_qualifications", 5)
+    max_posting_age_days = matching.get("max_posting_age_days", 7)
+
+    raw_postings, sources_polled, errors = _fetch_all_postings(session)
+    postings_found = len(raw_postings)
+    postings_new = _dedupe_and_store(session, raw_postings, max_posting_age_days)
+
+    profile = settings.load_profile()
     profile_hash = hash_profile(profile)
 
     last_run = get_last_run_log(session)
@@ -341,6 +431,13 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     if dry_run:
         _log.info("[dry-run] Would send alerts for %d match(es)", len(matches))
         _log.info("[dry-run] Would send %d partial match(es)", len(partial_matches))
+        alerts_sent = 0
+    elif get_bot_state(session).notifications_paused:
+        _log.info(
+            "Notifications paused — holding %d match(es) and %d partial match(es) for next cycle",
+            len(matches),
+            len(partial_matches),
+        )
         alerts_sent = 0
     else:
         alerts_sent = _notify_and_mark(session, matches, settings)
@@ -408,7 +505,11 @@ def run_digest(session: Session, settings: Settings) -> None:
         _now().strftime("%a %b %-d %I:%M%p"), postings_found, alerts_sent, top_match, unresolved
     )
 
-    if settings.telegram_bot_token and settings.telegram_chat_id:
+    if (
+        settings.telegram_bot_token
+        and settings.telegram_chat_id
+        and not get_bot_state(session).notifications_paused
+    ):
         send_message_with_retry(settings.telegram_bot_token, settings.telegram_chat_id, body)
 
 
@@ -423,8 +524,9 @@ def run_adzuna_poll(session: Session, settings: Settings) -> None:
         _log.info("Adzuna poll skipped: ADZUNA_APP_ID/ADZUNA_APP_KEY not configured")
         return
 
+    max_posting_age_days = _load_yaml_config().get("matching", {}).get("max_posting_age_days", 7)
     postings = adzuna.fetch(settings.adzuna_app_id, settings.adzuna_app_key)
-    new_count = _dedupe_and_store(session, postings)
+    new_count = _dedupe_and_store(session, postings, max_posting_age_days)
     _log.info("Adzuna poll: %d found, %d new", len(postings), new_count)
 
 
@@ -513,6 +615,10 @@ def main() -> None:
         with session_scope(engine) as session:
             run_adzuna_poll(session, settings)
 
+    def _scheduled_telegram_poll() -> None:
+        with session_scope(engine) as session:
+            process_telegram_updates(session, settings)
+
     scheduler.add_job(
         _scheduled_cycle,
         IntervalTrigger(minutes=settings.run_interval_minutes),
@@ -520,6 +626,9 @@ def main() -> None:
     )
     scheduler.add_job(_scheduled_digest, IntervalTrigger(hours=1), max_instances=1)
     scheduler.add_job(_scheduled_adzuna, IntervalTrigger(weeks=1), max_instances=1)
+    # Polls Telegram for /pause, /resume, and "Mark Applied" taps — deliberately
+    # frequent and decoupled from the hourly cycle so control feels responsive.
+    scheduler.add_job(_scheduled_telegram_poll, IntervalTrigger(minutes=2), max_instances=1)
 
     def _shutdown(signum: int, _frame: FrameType | None) -> None:
         _log.info("Received signal %d — shutting down after current cycle", signum)

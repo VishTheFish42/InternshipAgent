@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -22,7 +23,7 @@ _MAX_MESSAGE_CHARS = 4096  # Telegram's hard per-message limit
 _BURST_MAX_LINES = 10
 _RETRY_DELAY_SECONDS = 300
 _INDIVIDUAL_SEND_DELAY_SECONDS = 1.0  # Telegram's documented per-chat rate limit is ~1 msg/sec
-_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+_API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
 @dataclass
@@ -33,6 +34,7 @@ class MatchInfo:
     score: int
     reasoning: str
     apply_url: str
+    posting_id: int
 
 
 @dataclass
@@ -42,6 +44,7 @@ class PartialMatchInfo:
     score: int
     missing_qualifications: list[str]
     apply_url: str
+    posting_id: int
 
 
 @dataclass
@@ -149,6 +152,16 @@ def format_partial_match_message(matches: list[PartialMatchInfo]) -> str:
     return "\n".join(lines)
 
 
+def applied_button(posting_id: int) -> dict[str, Any]:
+    """Inline keyboard attached to individual-mode alerts so a tap marks the
+    posting applied via a callback_query — no typing, no ambiguity. Only
+    attached in individual mode; burst-mode digests skip it (one button per
+    line in a 20-item batch isn't worth the complexity)."""
+    return {
+        "inline_keyboard": [[{"text": "✅ Mark Applied", "callback_data": f"applied:{posting_id}"}]]
+    }
+
+
 def format_digest(
     period_label: str,
     postings_found: int,
@@ -171,12 +184,17 @@ def format_digest(
 # ── Sending ───────────────────────────────────────────────────────────────────
 
 
-def send_message(bot_token: str, chat_id: str, text: str) -> SendResult:
+def send_message(
+    bot_token: str, chat_id: str, text: str, *, reply_markup: dict[str, Any] | None = None
+) -> SendResult:
     """Attempt a single Telegram send. Never raises; failures are returned, not thrown."""
     try:
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         resp = httpx.post(
-            _API_URL.format(token=bot_token),
-            json={"chat_id": chat_id, "text": text},
+            _API_BASE.format(token=bot_token, method="sendMessage"),
+            json=payload,
             timeout=10.0,
         )
         data = resp.json()
@@ -196,9 +214,10 @@ def send_message_with_retry(
     text: str,
     *,
     retry_delay_seconds: int = _RETRY_DELAY_SECONDS,
+    reply_markup: dict[str, Any] | None = None,
 ) -> SendResult:
     """Send a message; on failure, wait once and retry. Logs a permanent failure if the retry also fails."""
-    result = send_message(bot_token, chat_id, text)
+    result = send_message(bot_token, chat_id, text, reply_markup=reply_markup)
     if result.success:
         return result
 
@@ -208,7 +227,7 @@ def send_message_with_retry(
         retry_delay_seconds,
     )
     time.sleep(retry_delay_seconds)
-    retry_result = send_message(bot_token, chat_id, text)
+    retry_result = send_message(bot_token, chat_id, text, reply_markup=reply_markup)
     if not retry_result.success:
         _log.error(
             "Telegram send to %s permanently failed after retry: %s",
@@ -216,6 +235,53 @@ def send_message_with_retry(
             retry_result.error,
         )
     return retry_result
+
+
+# ── Inbound updates ───────────────────────────────────────────────────────────
+
+
+def get_updates(
+    bot_token: str, *, offset: int | None = None, timeout: int = 0
+) -> list[dict[str, Any]]:
+    """Short-poll Telegram's getUpdates for new messages/callback_queries since
+    `offset`. Never raises; returns [] on any failure. `offset` should be the
+    last-seen update_id + 1 — Telegram then stops redelivering older updates."""
+    try:
+        params: dict[str, Any] = {"timeout": timeout}
+        if offset is not None:
+            params["offset"] = offset
+        resp = httpx.get(
+            _API_BASE.format(token=bot_token, method="getUpdates"),
+            params=params,
+            timeout=timeout + 10.0,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            _log.warning("Telegram getUpdates failed: %s", data.get("description"))
+            return []
+        result: list[dict[str, Any]] = data.get("result", [])
+        return result
+    except Exception as exc:
+        _log.warning("Telegram getUpdates failed: %s", exc)
+        return []
+
+
+def answer_callback_query(
+    bot_token: str, callback_query_id: str, *, text: str | None = None
+) -> None:
+    """Acknowledge a callback_query (removes the button's loading spinner and
+    optionally shows a brief toast). Never raises."""
+    try:
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text is not None:
+            payload["text"] = text
+        httpx.post(
+            _API_BASE.format(token=bot_token, method="answerCallbackQuery"),
+            json=payload,
+            timeout=10.0,
+        )
+    except Exception as exc:
+        _log.warning("Telegram answerCallbackQuery failed: %s", exc)
 
 
 # ── Public entrypoint ─────────────────────────────────────────────────────────
@@ -251,6 +317,7 @@ def notify_matches(
                 format_individual_message(
                     m.company, m.title, m.location, m.score, m.reasoning, m.apply_url
                 ),
+                reply_markup=applied_button(m.posting_id),
             )
         )
     return results
@@ -285,6 +352,7 @@ def notify_partial_matches(
                 format_partial_match_individual_message(
                     m.company, m.title, m.score, m.missing_qualifications, m.apply_url
                 ),
+                reply_markup=applied_button(m.posting_id),
             )
         )
     return results

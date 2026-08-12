@@ -9,11 +9,14 @@ from src.notifier import (
     MatchInfo,
     PartialMatchInfo,
     _redact_chat_id,
+    answer_callback_query,
+    applied_button,
     format_burst_message,
     format_digest,
     format_individual_message,
     format_partial_match_individual_message,
     format_partial_match_message,
+    get_updates,
     notify_matches,
     notify_partial_matches,
     send_message,
@@ -23,7 +26,9 @@ from src.notifier import (
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
-def _match(company="Stripe", title="Software Engineering Intern", location="Remote", score=88):
+def _match(
+    company="Stripe", title="Software Engineering Intern", location="Remote", score=88, posting_id=1
+):
     return MatchInfo(
         company=company,
         title=title,
@@ -31,16 +36,18 @@ def _match(company="Stripe", title="Software Engineering Intern", location="Remo
         score=score,
         reasoning="Strong Python/backend fit, welcoming undergrads.",
         apply_url="https://boards.greenhouse.io/stripe/jobs/123456",
+        posting_id=posting_id,
     )
 
 
-def _partial_match(company="Acme Corp", title="SWE Intern", score=62, missing=None):
+def _partial_match(company="Acme Corp", title="SWE Intern", score=62, missing=None, posting_id=1):
     return PartialMatchInfo(
         company=company,
         title=title,
         score=score,
         missing_qualifications=missing if missing is not None else ["Kubernetes", "GraphQL"],
         apply_url="https://boards.greenhouse.io/acme/jobs/1",
+        posting_id=posting_id,
     )
 
 
@@ -348,7 +355,7 @@ def test_notify_matches_empty_list_sends_nothing():
 
 
 def test_notify_matches_individual_mode_below_threshold():
-    matches = [_match(company="A"), _match(company="B")]
+    matches = [_match(company="A", posting_id=101), _match(company="B", posting_id=102)]
 
     with (
         patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
@@ -358,6 +365,11 @@ def test_notify_matches_individual_mode_below_threshold():
 
     assert len(results) == 2
     assert mock_post.call_count == 2
+
+    first_markup = mock_post.call_args_list[0].kwargs["json"]["reply_markup"]
+    assert first_markup["inline_keyboard"][0][0]["callback_data"] == "applied:101"
+    second_markup = mock_post.call_args_list[1].kwargs["json"]["reply_markup"]
+    assert second_markup["inline_keyboard"][0][0]["callback_data"] == "applied:102"
 
 
 def test_notify_matches_burst_mode_at_or_above_threshold():
@@ -373,6 +385,7 @@ def test_notify_matches_burst_mode_at_or_above_threshold():
     assert mock_post.call_count == 1
     body = mock_post.call_args.kwargs["json"]["text"]
     assert "5 new matches" in body
+    assert "reply_markup" not in mock_post.call_args.kwargs["json"]
 
 
 def test_notify_matches_individual_mode_paces_sends():
@@ -411,7 +424,10 @@ def test_notify_partial_matches_empty_list_sends_nothing():
 
 
 def test_notify_partial_matches_individual_mode_below_threshold():
-    matches = [_partial_match(company="A"), _partial_match(company="B")]
+    matches = [
+        _partial_match(company="A", posting_id=201),
+        _partial_match(company="B", posting_id=202),
+    ]
 
     with (
         patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
@@ -425,6 +441,8 @@ def test_notify_partial_matches_individual_mode_below_threshold():
 
     first_body = mock_post.call_args_list[0].kwargs["json"]["text"]
     assert "Partial match: A" in first_body
+    first_markup = mock_post.call_args_list[0].kwargs["json"]["reply_markup"]
+    assert first_markup["inline_keyboard"][0][0]["callback_data"] == "applied:201"
 
 
 def test_notify_partial_matches_burst_mode_at_or_above_threshold():
@@ -441,3 +459,66 @@ def test_notify_partial_matches_burst_mode_at_or_above_threshold():
     mock_sleep.assert_not_called()
     body = mock_post.call_args.kwargs["json"]["text"]
     assert "5 partial matches" in body
+
+
+# ── applied_button ────────────────────────────────────────────────────────────
+
+
+def test_applied_button_encodes_posting_id():
+    markup = applied_button(42)
+    button = markup["inline_keyboard"][0][0]
+    assert button["callback_data"] == "applied:42"
+    assert "Mark Applied" in button["text"]
+
+
+# ── get_updates ───────────────────────────────────────────────────────────────
+
+
+def test_get_updates_returns_result_list():
+    resp = MagicMock()
+    resp.json.return_value = {"ok": True, "result": [{"update_id": 1}, {"update_id": 2}]}
+    with patch("src.notifier.httpx.get", return_value=resp) as mock_get:
+        updates = get_updates("bot-token", offset=5)
+
+    assert updates == [{"update_id": 1}, {"update_id": 2}]
+    assert mock_get.call_args.kwargs["params"]["offset"] == 5
+
+
+def test_get_updates_returns_empty_list_on_api_error():
+    resp = MagicMock()
+    resp.json.return_value = {"ok": False, "description": "Unauthorized"}
+    with patch("src.notifier.httpx.get", return_value=resp):
+        updates = get_updates("bot-token")
+    assert updates == []
+
+
+def test_get_updates_returns_empty_list_on_network_error():
+    with patch("src.notifier.httpx.get", side_effect=RuntimeError("boom")):
+        updates = get_updates("bot-token")
+    assert updates == []
+
+
+def test_get_updates_omits_offset_when_none():
+    resp = MagicMock()
+    resp.json.return_value = {"ok": True, "result": []}
+    with patch("src.notifier.httpx.get", return_value=resp) as mock_get:
+        get_updates("bot-token")
+    assert "offset" not in mock_get.call_args.kwargs["params"]
+
+
+# ── answer_callback_query ─────────────────────────────────────────────────────
+
+
+def test_answer_callback_query_sends_expected_payload():
+    resp = MagicMock()
+    resp.json.return_value = {"ok": True}
+    with patch("src.notifier.httpx.post", return_value=resp) as mock_post:
+        answer_callback_query("bot-token", "cbq-1", text="Marked applied")
+
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload == {"callback_query_id": "cbq-1", "text": "Marked applied"}
+
+
+def test_answer_callback_query_never_raises_on_network_error():
+    with patch("src.notifier.httpx.post", side_effect=RuntimeError("boom")):
+        answer_callback_query("bot-token", "cbq-1")  # should not raise

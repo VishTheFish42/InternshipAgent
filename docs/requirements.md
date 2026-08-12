@@ -73,6 +73,10 @@
 | FR-34b | A partial match SHALL only be surfaced if its `missing_qualifications` count is `<= profile.yaml → matching.max_missing_qualifications`. Postings missing more than that SHALL be silently skipped. |
 | FR-34c | Qualifying partial matches SHALL be routed by the same individual/burst logic and `BURST_THRESHOLD` as full matches (FR-30a): one message per posting below the threshold (each including its missing-qualifications list and a direct application link), one batched message at or above it. |
 | FR-34d | A posting SHALL receive at most one partial-match notice. This SHALL be tracked independently of full-match `notified` status, so that a later rescore (e.g. after a profile update) that pushes the same posting's score above `min_score` SHALL still trigger a full-match alert. |
+| FR-35a | The system SHALL exclude postings older than `profile.yaml → matching.max_posting_age_days` (default 7) from being stored, scored, or notified, based on `posted_at`. Postings with no reliable `posted_at` SHALL NOT be excluded on this basis. |
+| FR-36a | Every individual-mode alert (full or partial match) SHALL include an inline "Mark Applied" button. Tapping it SHALL mark the posting as applied and permanently exclude it from all future full- and partial-match notification, regardless of subsequent rescoring. |
+| FR-37a | The system SHALL support `/pause` and `/resume` Telegram commands that toggle a master notification switch, independent of `profile.yaml → matching.digest_enabled` and of Telegram's own per-chat mute. While paused, the fetch/dedupe/score pipeline SHALL continue running normally; matching postings SHALL remain unnotified until `/resume` is issued, at which point they SHALL be sent normally on the next cycle — no matches SHALL be silently dropped due to a pause. |
+| FR-37b | Inbound Telegram commands and button taps SHALL only be honored if they originate from the configured `TELEGRAM_CHAT_ID`; updates from any other chat SHALL be silently ignored. |
 
 ### 1.7 Scheduling & CLI
 

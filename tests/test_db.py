@@ -13,6 +13,7 @@ from src.db import (
     DbStats,
     JobPosting,
     Notification,
+    get_bot_state,
     get_last_run_log,
     get_stats,
     get_unnotified_above_threshold,
@@ -22,10 +23,13 @@ from src.db import (
     get_unscored_postings,
     init_db,
     log_run,
+    mark_applied,
     mark_notified,
     mark_partial_notified,
     record_score,
     session_scope,
+    set_notifications_paused,
+    update_last_telegram_update_id,
     upsert_posting,
 )
 
@@ -60,7 +64,13 @@ def test_init_db_creates_tables(engine: Engine) -> None:
     from sqlalchemy import inspect
 
     tables = set(inspect(engine).get_table_names())
-    assert tables == {"job_postings", "company_lookup", "notifications", "run_log"}
+    assert tables == {
+        "job_postings",
+        "company_lookup",
+        "notifications",
+        "run_log",
+        "bot_state",
+    }
 
 
 def test_init_db_idempotent() -> None:
@@ -315,6 +325,19 @@ def test_get_unnotified_partial_matches_excludes_already_partial_notified(engine
     assert rows == []
 
 
+def test_get_unnotified_partial_matches_excludes_applied(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data(external_id="j1"))
+        record_score(s, p.id, 60, "x", "hash")
+        p.applied = True
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_partial_matches(
+            s, min_score=50, max_score_exclusive=70, max_missing_qualifications=5
+        )
+    assert rows == []
+
+
 # ── mark_partial_notified ─────────────────────────────────────────────────────
 
 
@@ -464,6 +487,17 @@ def test_threshold_results_sorted_by_score_desc(engine: Engine) -> None:
         rows = get_unnotified_above_threshold(s, threshold=70)
     scores = [r.match_score for r in rows]
     assert scores == [95, 85, 75]
+
+
+def test_threshold_excludes_applied(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        p.match_score = 90
+        p.applied = True
+
+    with session_scope(engine) as s:
+        rows = get_unnotified_above_threshold(s, threshold=70)
+    assert rows == []
 
 
 # ── mark_notified ─────────────────────────────────────────────────────────────
@@ -618,3 +652,94 @@ def test_get_stats_cost_zero_when_no_runs(engine: Engine) -> None:
     with session_scope(engine) as s:
         stats = get_stats(s)
     assert stats.estimated_cost_usd == 0.0
+
+
+# ── mark_applied ──────────────────────────────────────────────────────────────
+
+
+def test_mark_applied_sets_flag_and_timestamp(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        pid = p.id
+
+    with session_scope(engine) as s:
+        mark_applied(s, pid)
+
+    with session_scope(engine) as s:
+        posting = s.get(JobPosting, pid)
+        assert posting is not None
+        assert posting.applied is True
+        assert posting.applied_at is not None
+
+
+def test_mark_applied_is_idempotent(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        pid = p.id
+
+    with session_scope(engine) as s:
+        mark_applied(s, pid)
+    with session_scope(engine) as s:
+        first_applied_at = s.get(JobPosting, pid).applied_at  # type: ignore[union-attr]
+
+    with session_scope(engine) as s:
+        mark_applied(s, pid)
+    with session_scope(engine) as s:
+        posting = s.get(JobPosting, pid)
+        assert posting is not None
+        assert posting.applied is True
+        assert posting.applied_at == first_applied_at
+
+
+def test_mark_applied_raises_for_missing_posting(engine: Engine) -> None:
+    with pytest.raises(ValueError, match="not found"), session_scope(engine) as s:
+        mark_applied(s, 99999)
+
+
+# ── BotState ──────────────────────────────────────────────────────────────────
+
+
+def test_get_bot_state_creates_singleton_on_first_access(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        state = get_bot_state(s)
+    assert state.id == 1
+    assert state.last_update_id is None
+    assert state.notifications_paused is False
+
+
+def test_get_bot_state_returns_same_row_across_calls(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        get_bot_state(s)
+        set_notifications_paused(s, True)
+
+    with session_scope(engine) as s:
+        state = get_bot_state(s)
+    assert state.notifications_paused is True
+
+
+def test_set_notifications_paused_toggles_flag(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        set_notifications_paused(s, True)
+    with session_scope(engine) as s:
+        assert get_bot_state(s).notifications_paused is True
+
+    with session_scope(engine) as s:
+        set_notifications_paused(s, False)
+    with session_scope(engine) as s:
+        assert get_bot_state(s).notifications_paused is False
+
+
+def test_update_last_telegram_update_id_advances_cursor(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        update_last_telegram_update_id(s, 100)
+    with session_scope(engine) as s:
+        assert get_bot_state(s).last_update_id == 100
+
+
+def test_update_last_telegram_update_id_never_moves_backward(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        update_last_telegram_update_id(s, 100)
+    with session_scope(engine) as s:
+        update_last_telegram_update_id(s, 50)
+    with session_scope(engine) as s:
+        assert get_bot_state(s).last_update_id == 100

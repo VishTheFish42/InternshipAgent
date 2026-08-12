@@ -136,9 +136,16 @@ matching:
   partial_match_min_score: 50    # postings scoring in [this, min_score) are "partial matches"
   max_missing_qualifications: 5  # only surface a partial match missing this many quals or fewer
   digest_enabled: true # send a summary message every hour in addition to real-time alerts
+  max_posting_age_days: 7  # skip postings older than this (by posted_at); no reliable posted_at → kept
 ```
 
 **Partial matches:** postings scoring in `[partial_match_min_score, min_score)` are near-misses, not full alerts. The AI scorer also names any specific skills/tools/requirements from the posting your profile doesn't show (`missing_qualifications`). If a posting's gap list is `max_missing_qualifications` items or fewer, it's surfaced — one Telegram message per posting by default, each including the missing-qualifications list and a direct apply link — so you can spot a pattern (e.g. "Kubernetes keeps coming up") worth adding to your resume. Each partial match is only ever notified once; if a later profile update pushes its score above `min_score`, it still triggers a normal full-match alert.
+
+## Marking postings as applied, and pausing notifications
+
+Every individual-mode alert (full or partial match) carries a **"✅ Mark Applied" button**. Tap it and the posting is permanently excluded from future alerts, even if a later profile update would otherwise push it back above the match threshold — a belt-and-suspenders safety net on top of the agent's own deduplication.
+
+Send **`/pause`** to the bot at any time to stop receiving messages, and **`/resume`** to turn them back on. This is a real kill switch, not Telegram's own per-chat mute: while paused, the agent keeps polling, deduping, and scoring underneath — matches just wait unsent until you resume, so nothing found while paused is lost. Both the button and these commands only work from your configured `TELEGRAM_CHAT_ID`; messages from any other chat are ignored.
 
 ## Adding companies to monitor
 

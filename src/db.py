@@ -60,6 +60,8 @@ class JobPosting(Base):
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime)
     partial_notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     notifications: Mapped[list[Notification]] = relationship(
         "Notification", back_populates="job_posting"
@@ -115,6 +117,17 @@ class RunLog(Base):
     errors: Mapped[list[Any] | None] = mapped_column(JSON)
     profile_hash: Mapped[str | None] = mapped_column(String)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float)
+
+
+class BotState(Base):
+    """Singleton row (id=1) tracking inbound-Telegram-polling cursor state and
+    the master notifications pause/resume flag set via /pause and /resume."""
+
+    __tablename__ = "bot_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_update_id: Mapped[int | None] = mapped_column(Integer)
+    notifications_paused: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 # ── Schema init ───────────────────────────────────────────────────────────────
@@ -239,6 +252,7 @@ def get_unnotified_above_threshold(session: Session, threshold: int) -> list[Job
             .where(
                 JobPosting.match_score >= threshold,
                 JobPosting.notified == False,  # noqa: E712
+                JobPosting.applied == False,  # noqa: E712
             )
             .order_by(JobPosting.match_score.desc())
         ).scalars()
@@ -293,6 +307,7 @@ def get_unnotified_partial_matches(
             JobPosting.match_score < max_score_exclusive,
             JobPosting.notified == False,  # noqa: E712
             JobPosting.partial_notified == False,  # noqa: E712
+            JobPosting.applied == False,  # noqa: E712
         )
         .order_by(JobPosting.match_score.desc())
     ).scalars()
@@ -331,6 +346,51 @@ def mark_partial_notified(
     session.add(notif)
     session.flush()
     return notif
+
+
+def mark_applied(session: Session, posting_id: int) -> JobPosting:
+    """
+    Mark a posting as applied — a user-driven, belt-and-suspenders signal
+    (tapped via the "Mark Applied" button on an alert) that keeps it from
+    ever being re-surfaced, regardless of future rescoring. Idempotent: an
+    already-applied posting is left unchanged rather than erroring.
+    """
+    posting = session.get(JobPosting, posting_id)
+    if posting is None:
+        raise ValueError(f"JobPosting {posting_id} not found")
+    if not posting.applied:
+        posting.applied = True
+        posting.applied_at = _now()
+        session.flush()
+    return posting
+
+
+def get_bot_state(session: Session) -> BotState:
+    """Return the singleton BotState row, creating it on first access."""
+    state = session.get(BotState, 1)
+    if state is None:
+        state = BotState(id=1, last_update_id=None, notifications_paused=False)
+        session.add(state)
+        session.flush()
+    return state
+
+
+def set_notifications_paused(session: Session, paused: bool) -> BotState:
+    """Flip the master notifications on/off switch, set via /pause and /resume."""
+    state = get_bot_state(session)
+    state.notifications_paused = paused
+    session.flush()
+    return state
+
+
+def update_last_telegram_update_id(session: Session, update_id: int) -> BotState:
+    """Advance the getUpdates polling cursor so already-processed updates
+    aren't redelivered on the next poll."""
+    state = get_bot_state(session)
+    if state.last_update_id is None or update_id > state.last_update_id:
+        state.last_update_id = update_id
+        session.flush()
+    return state
 
 
 def log_run(session: Session, data: dict[str, Any]) -> RunLog:

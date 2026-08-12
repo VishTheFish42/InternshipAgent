@@ -13,10 +13,13 @@ from src.company_discoverer import RetryResult, SeedResult
 from src.config import Settings
 from src.db import (
     JobPosting,
+    get_bot_state,
     init_db,
     mark_notified,
     record_score,
     session_scope,
+    set_notifications_paused,
+    update_last_telegram_update_id,
     upsert_posting,
 )
 from src.main import (
@@ -31,6 +34,7 @@ from src.main import (
     _to_match_info,
     _to_partial_match_info,
     _to_scoring_posting,
+    process_telegram_updates,
     run_adzuna_poll,
     run_cycle,
     run_digest,
@@ -178,8 +182,34 @@ def test_dedupe_and_store_counts_only_new(engine: Engine) -> None:
         ),
     ]
     with session_scope(engine) as session:
-        new_count = _dedupe_and_store(session, postings)
+        new_count = _dedupe_and_store(session, postings, 7)
     assert new_count == 2
+
+
+def test_dedupe_and_store_skips_postings_older_than_max_age(engine: Engine) -> None:
+    postings = [
+        _raw_posting(external_id="fresh", posted_at=_now() - timedelta(days=1)),
+        _raw_posting(external_id="stale", posted_at=_now() - timedelta(days=30)),
+    ]
+    with session_scope(engine) as session:
+        new_count = _dedupe_and_store(session, postings, 7)
+    assert new_count == 1
+
+
+def test_dedupe_and_store_keeps_postings_with_no_posted_at(engine: Engine) -> None:
+    postings = [_raw_posting(external_id="unknown-age", posted_at=None)]
+    with session_scope(engine) as session:
+        new_count = _dedupe_and_store(session, postings, 7)
+    assert new_count == 1
+
+
+def test_dedupe_and_store_boundary_posting_just_inside_max_age_is_kept(engine: Engine) -> None:
+    postings = [
+        _raw_posting(external_id="edge", posted_at=_now() - timedelta(days=7) + timedelta(hours=1))
+    ]
+    with session_scope(engine) as session:
+        new_count = _dedupe_and_store(session, postings, 7)
+    assert new_count == 1
 
 
 # ── _to_scoring_posting ───────────────────────────────────────────────────────
@@ -510,7 +540,7 @@ def test_run_cycle_sends_alerts_for_matches_above_threshold(
     ):
         # First: fetch + dedupe inserts the posting, unscored.
         run_cycle_postings = _fetch_all_postings(session)[0]
-        _dedupe_and_store(session, run_cycle_postings)
+        _dedupe_and_store(session, run_cycle_postings, 7)
         stored = session.query(JobPosting).one()
         db_id = stored.id
 
@@ -536,6 +566,42 @@ def test_run_cycle_sends_alerts_for_matches_above_threshold(
     mock_notify.assert_called_once()
 
 
+def test_run_cycle_holds_matches_when_notifications_paused(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  min_score: 50\n", encoding="utf-8")
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[_raw_posting()]))]),
+    ):
+        run_cycle_postings = _fetch_all_postings(session)[0]
+        _dedupe_and_store(session, run_cycle_postings, 7)
+        db_id = session.query(JobPosting).one().id
+        set_notifications_paused(session, True)
+
+    fake_score = ScoringResult(
+        scored=[ScoredPosting(external_id=str(db_id), score=90, reasoning="Great fit.")],
+        input_tokens=10,
+        output_tokens=5,
+        estimated_cost_usd=0.0001,
+    )
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
+        patch("src.main.score_postings", return_value=fake_score),
+        patch("src.main.notify_matches") as mock_notify,
+    ):
+        summary = run_cycle(session, _settings(), dry_run=False)
+
+    mock_notify.assert_not_called()
+    assert summary["alerts_sent"] == 0
+    with session_scope(engine) as session:
+        assert session.query(JobPosting).one().notified is False
+
+
 def test_run_cycle_sends_partial_match_digest(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -552,7 +618,7 @@ def test_run_cycle_sends_partial_match_digest(
         patch("src.main._SOURCES", [("greenhouse", source)]),
     ):
         run_cycle_postings = _fetch_all_postings(session)[0]
-        _dedupe_and_store(session, run_cycle_postings)
+        _dedupe_and_store(session, run_cycle_postings, 7)
         db_id = session.query(JobPosting).one().id
 
     fake_score = ScoringResult(
@@ -704,6 +770,28 @@ def test_run_digest_sends_summary_message(
     assert "Digest" in body
 
 
+def test_run_digest_skips_send_when_notifications_paused(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+
+    with session_scope(engine) as session:
+        set_notifications_paused(session, True)
+
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
+        ),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        run_digest(session, _settings())
+
+    mock_send.assert_not_called()
+
+
 # ── run_adzuna_poll ────────────────────────────────────────────────────────────
 
 
@@ -729,6 +817,166 @@ def test_run_adzuna_poll_fetches_and_stores(engine: Engine) -> None:
     mock_fetch.assert_called_once_with("app-id", "app-key")
     with session_scope(engine) as session:
         assert session.query(JobPosting).count() == 1
+
+
+# ── process_telegram_updates ─────────────────────────────────────────────────
+
+
+def test_process_telegram_updates_noop_without_credentials(engine: Engine) -> None:
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates") as mock_get_updates,
+    ):
+        process_telegram_updates(session, _settings(telegram_bot_token=None))
+    mock_get_updates.assert_not_called()
+
+
+def test_process_telegram_updates_marks_applied_on_callback_query(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        posting = _stored_posting(session)
+        pid = posting.id
+
+    update = {
+        "update_id": 501,
+        "callback_query": {
+            "id": "cbq-1",
+            "data": f"applied:{pid}",
+            "message": {"chat": {"id": 123456789}},
+        },
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.answer_callback_query") as mock_answer,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_answer.assert_called_once()
+    assert mock_answer.call_args.args[1] == "cbq-1"
+    with session_scope(engine) as session:
+        assert session.get(JobPosting, pid).applied is True  # type: ignore[union-attr]
+    with session_scope(engine) as session:
+        assert get_bot_state(session).last_update_id == 501
+
+
+def test_process_telegram_updates_ignores_callback_from_other_chat(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        posting = _stored_posting(session)
+        pid = posting.id
+
+    update = {
+        "update_id": 502,
+        "callback_query": {
+            "id": "cbq-2",
+            "data": f"applied:{pid}",
+            "message": {"chat": {"id": 999999999}},
+        },
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.answer_callback_query") as mock_answer,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_answer.assert_not_called()
+    with session_scope(engine) as session:
+        assert session.get(JobPosting, pid).applied is False  # type: ignore[union-attr]
+
+
+def test_process_telegram_updates_invalid_callback_data_does_not_raise(engine: Engine) -> None:
+    update = {
+        "update_id": 503,
+        "callback_query": {
+            "id": "cbq-3",
+            "data": "applied:not-a-number",
+            "message": {"chat": {"id": 123456789}},
+        },
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.answer_callback_query") as mock_answer,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_answer.assert_called_once_with(
+        "bot-token-test", "cbq-3", text="Couldn't mark that — try again"
+    )
+
+
+def test_process_telegram_updates_pause_command_sets_paused_and_replies(engine: Engine) -> None:
+    update = {
+        "update_id": 504,
+        "message": {"text": "/pause", "chat": {"id": 123456789}},
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_send.assert_called_once()
+    assert "paused" in mock_send.call_args.args[2].lower()
+    with session_scope(engine) as session:
+        assert get_bot_state(session).notifications_paused is True
+
+
+def test_process_telegram_updates_resume_command_clears_paused(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        set_notifications_paused(session, True)
+
+    update = {
+        "update_id": 505,
+        "message": {"text": "/resume", "chat": {"id": 123456789}},
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_send.assert_called_once()
+    with session_scope(engine) as session:
+        assert get_bot_state(session).notifications_paused is False
+
+
+def test_process_telegram_updates_ignores_message_from_other_chat(engine: Engine) -> None:
+    update = {
+        "update_id": 506,
+        "message": {"text": "/pause", "chat": {"id": 999999999}},
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.send_message_with_retry") as mock_send,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_send.assert_not_called()
+    with session_scope(engine) as session:
+        assert get_bot_state(session).notifications_paused is False
+
+
+def test_process_telegram_updates_passes_offset_from_stored_cursor(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        update_last_telegram_update_id(session, 700)
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[]) as mock_get_updates,
+    ):
+        process_telegram_updates(session, _settings())
+
+    assert mock_get_updates.call_args.kwargs["offset"] == 701
 
 
 def test_run_digest_counts_only_recent_postings(
