@@ -17,8 +17,9 @@
 │                           ┌─────────────────────────────┤          │
 │                           │                             │           │
 │        Job Board APIs (Tier 2)              ATS APIs (Tier 1)      │
-│   Indeed RSS · Adzuna · Wellfound · YC    Greenhouse · Lever        │
-│   HackerNews · RemoteOK · Dice           Custom scrapers            │
+│   Indeed RSS · Adzuna · JSearch          Greenhouse · Lever        │
+│   HackerNews · RemoteOK                  Custom scrapers            │
+│   (Wellfound/YC/Dice: not wired in)                                 │
 │                           │                             │           │
 │                           └─────────────┬───────────────┘          │
 │                                         ▼                           │
@@ -32,7 +33,7 @@
 │                              │   AI Scorer         │               │
 │                              │   (Claude Haiku)    │               │
 │                              └──────────┬──────────┘               │
-│                                         │ score >= threshold        │
+│                                         │ every scored posting      │
 │                                         ▼                           │
 │                              ┌─────────────────────┐               │
 │                              │   Notifier          │               │
@@ -73,8 +74,10 @@ This replaces the manual `profile.yaml` skills section. The user never edits the
                            keeping unique ones
                                       │
                                       ▼
-                           profile.cache.json  ──► committed to git
-                                                   (PDFs are not)
+                           profile.cache.json  ──► gitignored, synced to
+                                                   Railway via PROFILE_CACHE
+                                                   env var (§2.4) — NOT committed
+                                                   (neither are the PDFs)
 ```
 
 ### 2.2 Extraction prompt
@@ -190,17 +193,28 @@ Unresolved companies are surfaced in two ways:
 
 ## 4. Data Sources (Tier 2 — Broad Search)
 
-All Tier 2 sources run the same keyword queries in parallel and feed into the shared deduplication layer. A posting that appears on multiple platforms is stored once and triggers one alert.
+Indeed RSS, HN, and RemoteOK run the same keyword queries sequentially within the main poll cycle (`_fetch_all_postings()` in `main.py` is a plain `for` loop, not parallelized/threaded). Adzuna and JSearch run one broad query each on their own separate, slower schedules (§10.1) rather than the full keyword list. All of them feed into the same shared deduplication layer regardless of cadence — a posting that appears on multiple platforms is stored once and triggers one alert.
 
-### 4.1 Indeed RSS (free, replaces JSearch)
+### 4.1 Indeed RSS (free)
 
 - **Provider**: Indeed public RSS feeds — no API key, no account required
-- **Covers**: All jobs posted on Indeed, which aggregates a large portion of US job postings (including many that were previously accessed via JSearch)
+- **Covers**: All jobs posted on Indeed, which aggregates a large portion of US job postings
 - **URL format**: `https://www.indeed.com/rss?q={query}&l=United+States&jt=internship&sort=date`
 - **Parse with**: `feedparser` library; each RSS item includes job ID in the `<guid>` field
 - **Free tier**: Effectively unlimited — public RSS, no rate limit specified. Polite 1 req/2s between queries.
-- **Limitation**: Does not include LinkedIn-exclusive postings. Those are covered by Tier 1 (direct ATS monitoring) for listed companies.
+- **Limitation**: Does not include LinkedIn-exclusive postings. Those are covered by JSearch (§4.1a) instead.
 - **Dedup key**: `indeed:{job_id}` (extracted from RSS guid)
+
+### 4.1a JSearch (RapidAPI) — LinkedIn coverage
+
+- **Provider**: JSearch on RapidAPI — the only source that reaches LinkedIn, Glassdoor, and ZipRecruiter postings, aggregated through a legitimate metered API rather than direct scraping (see the LinkedIn constraint, §3 of `requirements.md`)
+- **Endpoint**: `GET https://jsearch.p.rapidapi.com/search-v2` — **not** the more commonly documented `/search`, which 404s on this project's subscription; confirmed by live-testing against the real key, since RapidAPI's "JSearch" listings vary across publishers in which endpoints they actually expose. Results are nested under `data.jobs`, not `data` directly.
+- **Auth**: `X-RapidAPI-Key` / `X-RapidAPI-Host` headers; requires `JSEARCH_API_KEY`
+- **Query shape**: one broad query per poll (`"software engineering intern in the United States"`), `country=us`, `employment_types=INTERN`, `date_posted=week` — deliberately not looped per domain keyword like Indeed RSS, since every request is metered
+- **Cadence**: its own scheduled job, independent of the main cycle — currently every 4 hours (~180 requests/month), sized to fit a 200/month free-tier plan. Re-tune the interval (`queries_per_poll × polls_per_day × 30 ≤ plan quota`) if the plan differs.
+- **Source labeling**: each result includes `job_publisher` (e.g. `"LinkedIn"`, `"ZipRecruiter"`, `"BeBee"`) — the exact board it was aggregated from. Encoded into `source` as `jsearch:{publisher}`, the same compound-source convention `greenhouse.py`/`lever.py` use for company slugs, and surfaced to the user as the message's `Source:` line (§9.2)
+- **Verified live**: a test query returned 10 postings, 4 explicitly `job_publisher: LinkedIn`
+- **Dedup key**: `(source, external_id) = ("jsearch:{publisher}", job_id)` — unlike other sources, `source` itself is compound here rather than a fixed string
 
 ### 4.2 Adzuna
 
@@ -211,15 +225,19 @@ All Tier 2 sources run the same keyword queries in parallel and feed into the sh
 - **Filter**: `where=us`, `sort_by=date`, `full_time=0`
 - **Dedup key**: `adzuna:{id}`
 
-### 4.3 Wellfound / AngelList (startup-specific)
+### 4.3 Wellfound / AngelList (startup-specific) — NOT IMPLEMENTED
+
+Designed in but never built — there is no `src/scrapers/wellfound.py`. `WELLFOUND_API_KEY` exists as a `Settings` field with no corresponding scraper reading it. Planned for a later phase; the rest of this subsection describes the original design intent, not current behavior.
 
 - **Provider**: Wellfound (formerly AngelList Talent)
-- **Covers**: YC-backed, VC-backed, and early-stage startups — many post only here
+- **Covers (planned)**: YC-backed, VC-backed, and early-stage startups — many post only here
 - **Auth**: Wellfound API key (free developer access)
-- **Why needed**: Startups that recruit off Wellfound often don't appear in JSearch/Adzuna results at all
-- **Dedup key**: `wellfound:{job_id}`
+- **Why needed**: Startups that recruit off Wellfound often don't appear in Indeed/Adzuna/JSearch results at all
+- **Dedup key (planned)**: `wellfound:{job_id}`
 
-### 4.4 Y Combinator Work at a Startup
+### 4.4 Y Combinator Work at a Startup — NOT WIRED IN
+
+`src/scrapers/yc.py` exists and is implemented, but is not registered in `_SOURCES` or any scheduled job in `main.py` — it's dormant, never actually called. Planned to be wired in later.
 
 - **Provider**: `workatastartup.com` (free public API, no auth required)
 - **Covers**: All YC-batch companies exclusively — fills a gap because YC companies often list only here before listing on LinkedIn
@@ -233,7 +251,7 @@ All Tier 2 sources run the same keyword queries in parallel and feed into the sh
 - **Covers**: Monthly HN hiring threads (`Ask HN: Who is hiring?`). Extremely popular among AI labs, dev-tool startups, and research orgs — many post only here
 - **Mechanism**: Parse the current month's thread; extract comments mentioning "intern" or "internship"; extract company name and any URL; run through AI scorer like a normal posting
 - **Dedup key**: `hn:{comment_id}`
-- **Cadence**: Monthly threads are parsed once on release (first weekday of each month) and re-checked daily for new comments
+- **Cadence**: Wired into the main poll cycle (`_SOURCES` in `main.py`) — re-fetched every cycle (default hourly), same as Indeed RSS and RemoteOK, not on a separate monthly/daily schedule
 
 ### 4.6 RemoteOK
 
@@ -242,7 +260,9 @@ All Tier 2 sources run the same keyword queries in parallel and feed into the sh
 - **Filter**: tags include `intern` or `junior`; parsed from JSON feed
 - **Dedup key**: `remoteok:{id}`
 
-### 4.7 Dice
+### 4.7 Dice — NOT WIRED IN
+
+`src/scrapers/dice.py` exists and is implemented, but — like YC (§4.4) — is not registered in any scheduled job. Dormant.
 
 - **Provider**: Dice Tech Job Board (API or RSS feed)
 - **Covers**: Tech-specific; large US engineering job board that surfaces postings from defense contractors, enterprise software, and mid-size tech companies that LinkedIn under-indexes
@@ -257,7 +277,7 @@ All Tier 2 sources run the same keyword queries in parallel and feed into the sh
 
 ```
 Tier 1 — Direct company monitoring (companies.yaml)
-  └── Fastest alert (within one 30-min poll cycle of posting)
+  └── Fastest alert (within one poll cycle of posting — default 60 min)
   └── Best for: big tech, quant firms, companies that don't post broadly
   └── Source: Greenhouse / Lever ATS APIs, custom scrapers
   └── Coverage: ~150 companies in your personal list
@@ -265,17 +285,19 @@ Tier 1 — Direct company monitoring (companies.yaml)
 Tier 2 — Broad job board search (all other companies)
   └── Catches any company posting on any major platform
   └── Best for: startups, mid-size companies, companies you don't know yet
-  └── Sources: JSearch · Adzuna · Wellfound · YC · HackerNews · RemoteOK · Dice
-  └── Coverage: effectively unlimited
+  └── Active sources: Indeed RSS · Adzuna (weekly) · JSearch (LinkedIn, every 4hrs) ·
+      HackerNews · RemoteOK
+  └── Not currently implemented/wired in: Wellfound, YC, Dice (§4.3, §4.4, §4.7)
+  └── Coverage: broad, but not "effectively unlimited" until the above three ship
 ```
 
 The same posting can appear in both tiers (e.g., a Stripe job found via Indeed RSS AND via the Greenhouse direct monitor). Cross-source deduplication (§6) ensures you only get one alert.
 
 ### 5.2 Domain-based keyword search (not title matching)
 
-The agent searches using broad domain-level keyword combinations across all Tier 2 sources. The AI scorer handles fine-grained relevance filtering — the search layer casts a wide net.
+The agent searches using broad domain-level keyword combinations. The AI scorer handles fine-grained relevance filtering — the search layer casts a wide net.
 
-**Queries run in parallel across all sources:**
+**Full query list** (run sequentially against Indeed RSS, HN, and RemoteOK each main cycle — see §4's intro; Adzuna and JSearch use one broad query instead, not this full list):
 ```
 # Core SWE / DS / ML / AI
 "software engineering intern"
@@ -300,16 +322,18 @@ The agent searches using broad domain-level keyword combinations across all Tier
 
 The agent does not filter by semester or term — it catches summer, fall, spring, and co-op postings alike. Season filtering would require parsing unstructured job description text and is left to the AI scorer (which can flag term in its reasoning).
 
-**Filters applied at the search layer** (before AI scoring):
-- Country: United States
-- Date posted: last 24 hours (catches fresh postings only)
-- Job type: internship / part-time / contract (exclude full-time)
-- Keywords excluded: anything in `profile.yaml → preferences.keywords_excluded`
+**Filters applied at the search layer** (before storage — vary per source, see §4 for each one's exact query params):
+- Country: United States, where the source's API supports it (Indeed, Adzuna, JSearch); HN and RemoteOK have no country param and rely entirely on the AI scorer to catch non-US postings
+- Job type: internship-flavored, where supported (Indeed's `jt=internship`, JSearch's `employment_types=INTERN`, Adzuna's `full_time=0`); HN and RemoteOK don't filter by employment type at the query level
+- Freshness: **not** a per-source "date posted" query param for most sources — enforced uniformly after fetching, at the dedupe/store step, via `max_posting_age_days` (default 7, `profile.yaml → matching.max_posting_age_days`). Postings with no reliable `posted_at` are kept rather than dropped. JSearch is the one exception with an actual API-level filter (`date_posted=week`).
+
+**Correction (found stale while auditing this doc, 2026-08-12): keywords_excluded is NOT a pre-scoring filter**, despite FR-05's original intent. `keywords_excluded` is only ever read in `matcher.py`'s `build_profile_summary()`, where it's rendered into the Claude system prompt as a hint ("Automatically excluded keywords: ...") for the AI scorer to weigh — every posting is still scored (and billed) regardless of whether it contains an excluded keyword. There is no code path that drops a posting before scoring based on this list. Worth fixing later if the token-cost savings FR-05 intended actually matter.
 
 **Filters applied by AI scorer** (after fetching):
 - Relevance to user's actual skill set
 - Seniority level appropriateness
 - Degree requirements (no "PhD required" unless configured)
+- `keywords_excluded` (see correction above — advisory to the scorer, not a hard pre-filter)
 
 ### 5.3 Tier 1 company career page search
 
@@ -317,7 +341,7 @@ For direct ATS monitoring, the agent searches each company's board for postings 
 
 ### 5.4 Why you don't need to list every company
 
-Between all Tier 2 sources, the agent covers every company posting on LinkedIn, Indeed, ZipRecruiter, Glassdoor, Wellfound, Dice, RemoteOK, or HN. That is the vast majority of tech internship postings worldwide. The Tier 1 list is only needed for companies where you want faster notification or where the company doesn't post publicly on any board.
+Between the currently active Tier 2 sources, the agent covers every company posting on Indeed, RemoteOK, or HN's monthly thread — and, when `JSEARCH_API_KEY` is configured, LinkedIn, Glassdoor, and ZipRecruiter too. Wellfound and Dice coverage is not yet available (§4.3, §4.7 — not implemented/not wired in). The Tier 1 list is still worth using for companies where you want the fastest possible alert, or where the company doesn't post publicly on any of the above boards.
 
 ---
 
@@ -368,7 +392,9 @@ This is a best-effort fallback; false positives (two legitimately different role
 ```sql
 CREATE TABLE job_postings (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    source              TEXT NOT NULL,      -- 'jsearch', 'adzuna', 'wellfound', 'yc', 'hn', 'remoteok', 'dice', 'greenhouse:stripe', etc.
+    source              TEXT NOT NULL,      -- 'indeed', 'adzuna', 'hn', 'remoteok', 'greenhouse:{slug}',
+                                             -- 'lever:{slug}', 'jsearch:{publisher}' (e.g. 'jsearch:LinkedIn') —
+                                             -- greenhouse/lever/jsearch encode extra context after the colon
     external_id         TEXT NOT NULL,      -- ID from the source system
     title               TEXT NOT NULL,
     company             TEXT NOT NULL,
@@ -382,15 +408,20 @@ CREATE TABLE job_postings (
     description         TEXT,
     posted_at           DATETIME,
     found_at            DATETIME NOT NULL,
-    match_score         INTEGER,            -- 0–100; NULL = not yet scored
+    match_score         INTEGER,            -- 0–100; NULL = not yet scored. No minimum-score gate on
+                                             -- notification — every scored posting gets an alert.
     match_reasoning     TEXT,
     missing_qualifications JSON,            -- Claude-identified gaps vs. the profile (list[str])
     profile_hash        TEXT,               -- hash of profile.cache.json at scoring time
     notified            BOOLEAN DEFAULT FALSE,
     notified_at         DATETIME,
-    partial_notified    BOOLEAN DEFAULT FALSE, -- separate flag: a partial-match notice already
-                                             -- fired, but full-match eligibility (`notified`)
-                                             -- stays open in case a rescore pushes the score up
+    partial_notified    BOOLEAN DEFAULT FALSE, -- UNUSED as of the full/partial-match tier removal
+                                             -- (§9.1). Left in place rather than migrated out — not
+                                             -- worth the risk for a dead column; see the deploy-race
+                                             -- note in docs/tasks.md on the cost of schema migrations.
+    applied             BOOLEAN DEFAULT FALSE, -- set via the "Mark Applied" Telegram button tap;
+                                             -- permanently excludes the posting from future alerts
+    applied_at          DATETIME,
     UNIQUE(source, external_id)
 );
 
@@ -447,6 +478,20 @@ CREATE TABLE run_log (
 );
 ```
 
+### 7.5 `bot_state` table
+
+Singleton row (`id=1`, created lazily on first access) added alongside the "Mark Applied" / `/pause` / `/resume` feature — not present in the original schema design; documented here since it was missing from this section entirely until this audit pass.
+
+```sql
+CREATE TABLE bot_state (
+    id                    INTEGER PRIMARY KEY,   -- always 1
+    last_update_id        INTEGER,                -- Telegram getUpdates cursor; advances past
+                                                    -- already-processed updates so they aren't
+                                                    -- redelivered on the next poll
+    notifications_paused  BOOLEAN DEFAULT FALSE    -- master kill switch set by /pause and /resume
+);
+```
+
 ---
 
 ## 8. AI Scoring
@@ -469,9 +514,9 @@ Claude is instructed to evaluate each posting on:
 
 Score 0–100. Claude also identifies `missing_qualifications`: specific skills, tools, or requirements named in the posting that the candidate's profile doesn't show (empty list for a strong match). Return JSON array with `external_id`, `score`, `reasoning` (1–2 sentences), `missing_qualifications` (list of short strings).
 
-### 8.2a Partial matches
+### 8.2a No minimum-score gate
 
-A posting scoring in `[partial_match_min_score, min_score)` (defaults: 50–69) is a near-miss, not a full alert. It's only surfaced if `len(missing_qualifications) <= max_missing_qualifications` (default 5) — few enough gaps that a resume update is a plausible fix, not a fundamentally different role. Qualifying postings are routed through the same individual/burst logic as full matches (§9.1a) — one message per posting below `BURST_THRESHOLD`, one batched message at or above it. A posting gets a partial-match notice at most once (`partial_notified` flag) — this is tracked separately from `notified`, so if a later profile update (new resume, new project) pushes the same posting's score above `min_score` on rescore, it's still eligible for a real full-match alert.
+There is no `min_score` threshold and no separate "partial match" tier — both existed at one point and were removed. Every scored posting is notified, with its score, reasoning, and `missing_qualifications` all included in the message (§9.2), so the user judges fit themselves rather than the system silently dropping weak matches. See §9.1 for the unified notification routing.
 
 ### 8.3 Model selection
 
@@ -502,61 +547,44 @@ Total: well within the $10/month budget.
 
 ### 9.1 Notification modes
 
-The notifier operates in two modes per polling cycle depending on how many matches are found. This applies identically to full matches (`notify_matches()`) and partial matches (`notify_partial_matches()`) — both are routed by the same `BURST_THRESHOLD`, both paced the same way in individual mode.
+The notifier operates in one of two modes per polling cycle, depending on how many scored postings there are to notify (`notify_matches()`). There is no separate full/partial-match distinction — every scored posting goes through this same single path, since the score floor was removed (§8.2a).
 
-**Individual mode** (< `BURST_THRESHOLD` matches, default 20): one message per match, each including a direct apply link. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 matches takes ~15 seconds to fully notify, not instant.
+**Individual mode** (< `BURST_THRESHOLD` postings, default 20): one message per posting, each including its score, reasoning, missing qualifications, source board, and a direct apply link, plus a "Mark Applied" button. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 postings takes ~15 seconds to fully notify, not instant.
 
 ```
 [InternAgent] Stripe · Software Engineering Intern · Remote
+Source: Greenhouse
 Match: 88 — Strong Python/backend fit, welcoming undergrads
+Missing: Kubernetes
 Apply: https://boards.greenhouse.io/stripe/jobs/123456
 ```
 
-**Burst mode** (≥ `BURST_THRESHOLD` matches): a single summary message listing all matches, each with its own apply link, capped at 10 lines shown (`+ N more — run db stats`) to stay within Telegram's message length limit on a genuinely high-volume cycle.
+**Burst mode** (≥ `BURST_THRESHOLD` postings): a single summary message listing all of them, each with its score, source, missing qualifications, and its own apply link, capped at 10 lines shown (`+ N more — run db stats`) to stay within Telegram's message length limit on a genuinely high-volume cycle.
 
 ```
-[InternAgent] 25 new matches this cycle
- 1. Stripe · SWE Intern · Remote (92)
+[InternAgent] 25 new postings this cycle
+ 1. Stripe · SWE Intern · Remote (92) via Greenhouse — missing: none listed
     Apply: https://boards.greenhouse.io/stripe/jobs/123456
- 2. Anthropic · ML Intern · SF (89)
-    Apply: https://jobs.lever.co/anthropic/abc123
+ 2. TikTok · SWE Intern · Seattle (78) via LinkedIn — missing: Kubernetes
+    Apply: https://www.linkedin.com/jobs/view/abc123
  + 23 more — run `db stats` to see all
 ```
 
 The full list is always stored in the database. `db stats` shows everything regardless of which mode was used. `BURST_THRESHOLD` is configurable via env var — the default (20) was chosen deliberately high so individual messages (with apply links) are the normal experience, and batching only kicks in as a safety net on unusually high-volume cycles, not as the default behavior.
 
-### 9.1a Partial-match mode
-
-Uses the exact same individual/burst routing as §9.1, on the same `BURST_THRESHOLD`. Individual partial-match messages include the missing-qualifications list and an apply link:
-
-```
-[InternAgent] Partial match: Acme Corp · SWE Intern
-Score: 68 — missing: Kubernetes
-Apply: https://boards.greenhouse.io/acme/jobs/1
-```
-
-Burst mode (≥ `BURST_THRESHOLD` partial matches in one cycle) batches them the same way full matches do:
-
-```
-[InternAgent] 3 partial matches this cycle
- 1. Acme Corp · SWE Intern (68) — missing: Kubernetes
-    Apply: https://boards.greenhouse.io/acme/jobs/1
- 2. Widget Co · Data Intern (62) — missing: PySpark, Airflow
-    Apply: https://boards.greenhouse.io/widget/jobs/2
- 3. Bolt Labs · Backend Intern (55) — missing: Go, gRPC
-    Apply: https://boards.greenhouse.io/bolt/jobs/3
-Consider updating your resume/profile if you notice a pattern.
-```
-
 ### 9.2 Real-time message format (individual mode)
 
 ```
 [InternAgent] Stripe · Software Engineering Intern · Remote
+Source: Greenhouse
 Match: 88 — Strong Python/backend fit, welcoming undergrads
+Missing: Kubernetes
 Apply: https://boards.greenhouse.io/stripe/jobs/123456
 ```
 
-Targets ≤4096 chars (Telegram's hard per-message limit — generous compared to SMS's per-segment cost, so truncation is a rare edge case rather than the norm). URL is always included verbatim; reasoning is truncated if needed.
+The `Source:` line is derived from `JobPosting.source` via `_friendly_source()` in `notifier.py` — most sources map to a fixed label (`greenhouse:{slug}` → `"Greenhouse"`); `jsearch:{publisher}` is the one exception where the compound suffix *is* the label (`jsearch:LinkedIn` → `"LinkedIn"`), since that's the actual board the posting was aggregated from. The line is omitted entirely if `source` is empty (defensive default, not expected in practice).
+
+Targets ≤4096 chars (Telegram's hard per-message limit — generous compared to SMS's per-segment cost, so truncation is a rare edge case rather than the norm). URL is always included verbatim; reasoning is truncated if needed to fit the budget, after accounting for the header, source line, and missing-qualifications/apply-url suffix.
 
 ### 9.3 Digest message format
 
@@ -582,9 +610,17 @@ Top match: Stripe SWE Intern (92/100)
 
 ### 10.1 Scheduler
 
-- `APScheduler` with `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default: 60)
-- `max_instances=1` prevents overlapping runs
-- Digest (unresolved-company retry + summary message) sent via a separate `IntervalTrigger(hours=1)`, also `max_instances=1`
+Five independent `APScheduler` jobs, all `max_instances=1` to prevent overlapping runs of the same job (different jobs can still run concurrently with each other):
+
+| Job | Interval | Does |
+|---|---|---|
+| Main cycle | `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default 60) | Fetch (Indeed/HN/RemoteOK/Greenhouse/Lever), dedupe, score, notify |
+| Digest | `IntervalTrigger(hours=1)` | Retry unresolved companies, send summary message |
+| Adzuna | `IntervalTrigger(weeks=1)` | Fetch, store unscored — separate from the main cycle to fit its free-tier quota |
+| JSearch | `IntervalTrigger(hours=4)` | Fetch (LinkedIn/Glassdoor/ZipRecruiter via one broad query), store unscored — separate for the same reason, sized to a 200/month plan |
+| Telegram command poll | `IntervalTrigger(minutes=2)` | `getUpdates` for `/pause`, `/resume`, and "Mark Applied" taps — deliberately frequent and decoupled from the hourly cycle so control feels responsive from the phone |
+
+Postings Adzuna and JSearch store are picked up and scored by whichever main cycle run happens next — they don't score or notify themselves.
 
 ### 10.2 Run lifecycle
 
@@ -592,28 +628,40 @@ Top match: Stripe SWE Intern (92/100)
 startup
   └── load .env
   └── load profile.cache.json + profile.yaml
-  └── validate all credentials
-  └── check for resume file changes → warn if detected
-  └── start APScheduler
+  └── validate ANTHROPIC_API_KEY (required; process exits if missing)
+        (TELEGRAM_BOT_TOKEN/CHAT_ID and other optional keys are validated
+        lazily at send/fetch time, not at startup)
+  └── start APScheduler (all 5 jobs from §10.1)
 
-each scheduled run:
-  └── for each source (parallel):
+each main-cycle run:
+  └── seed/resolve companies from COMPANIES_CONFIG or config/companies.yaml
+  └── for each active source (sequential, not parallel — greenhouse/lever/indeed/hn/remoteok):
         └── fetch postings (broad keyword search)
-        └── retry on failure (3x, exponential back-off)
-  └── deduplicate against DB (insert new, skip known)
+        └── on failure: log and skip that source, don't fail the run (NFR-01)
+  └── deduplicate against DB (insert new, skip known; skip anything older than
+      max_posting_age_days)
   └── batch-score all NULL-score postings (groups of 10 via Claude)
-  └── for each score >= min_score AND notified=FALSE:
-        └── send Telegram message
+  └── for every scored, unnotified, non-applied posting — no score floor:
+        └── send Telegram message (individual or burst, by BURST_THRESHOLD)
         └── mark notified=TRUE
-  └── check if profile hash changed → trigger re-score pass
+  └── check if profile hash changed → trigger re-score pass on unnotified postings
   └── write run_log entry (JSON)
 
-every hour (separate job):
+every hour (digest job):
   └── re-attempt discovery for unresolved companies (1-hour per-company cooldown)
   └── compile last-hour stats (postings found, alerts sent)
   └── fetch unresolved companies list
-  └── send digest message
+  └── send digest message (unconditionally, if digest_enabled and not paused —
+      not gated on there being anything new to report)
+
+every 2 minutes (telegram command poll):
+  └── getUpdates since last cursor
+  └── callback_query "applied:{id}" → mark_applied, only from TELEGRAM_CHAT_ID
+  └── message "/pause" or "/resume" → toggle bot_state.notifications_paused,
+      only from TELEGRAM_CHAT_ID
 ```
+
+**Not implemented**: startup does not currently check `/resumes` for file changes and warn — `detect_resume_changes()` exists in `resume_extractor.py` but is never called anywhere in `main.py`. The user must remember to run `--rebuild-profile` manually after updating a resume PDF.
 
 ---
 
@@ -622,8 +670,14 @@ every hour (separate job):
 ```
 InternshipAgent on Railway
   ├── Worker process: python -m src.main
-  ├── SQLite on Railway persistent volume (or Postgres plugin)
-  └── profile.cache.json committed to repo — no PDFs on server
+  ├── SQLite on a Railway persistent volume (mounted at /data; no Postgres in use)
+  ├── GitHub-linked: auto-deploys on push to main
+  └── profile.cache.json and config/companies.yaml are BOTH gitignored —
+      neither reaches the container via git. Each has its own env var
+      (PROFILE_CACHE, COMPANIES_CONFIG) that must be synced manually; see
+      the two workflows below. This is a real gap that caused company-direct
+      monitoring to be silently inert in production for a while — see the
+      docs/tasks.md entry on the companies.yaml deploy gap.
 ```
 
 **Procfile:**
@@ -646,9 +700,22 @@ restartPolicyMaxRetries = 10
 ```
 1. Update PDF in /resumes/ locally
 2. python -m src.main --rebuild-profile
-3. git add profile.cache.json && git commit -m "update profile" && git push
-4. Railway auto-redeploys (~30s)
+   → writes profile.cache.json locally
+   → prints: railway variables set PROFILE_CACHE="<base64 string>"
+3. Run that printed command (Railway CLI must be installed and logged in)
+4. Setting the variable triggers a Railway redeploy automatically
 ```
+
+**Companies watchlist update workflow:**
+```
+1. Edit config/companies.yaml locally
+2. python -m src.main --sync-companies
+   → prints: railway variables set COMPANIES_CONFIG="<base64 string>"
+3. Run that printed command
+4. Setting the variable triggers a Railway redeploy automatically
+```
+
+Neither `profile.cache.json` nor `config/companies.yaml` is ever committed to git — both stay gitignored, matching the "repo is public, personal data stays out of it" rule in §2.4 and §12.
 
 ---
 
@@ -677,6 +744,6 @@ restartPolicyMaxRetries = 10
 | `pydantic` / `pydantic-settings` | Config validation |
 | `pyyaml` | profile.yaml parsing |
 | `tenacity` | Retry with exponential back-off |
-| `structlog` | Structured JSON logging |
+| `structlog` | Listed in `requirements.txt` but not actually imported anywhere in `src/` — structured JSON logging is done via stdlib `logging.basicConfig()` with a manual JSON format string (`_configure_logging()` in `main.py`) instead. Dead dependency; worth removing from `requirements.txt` if nothing ends up using it. |
 | `mypy` | Static type checking |
 | `pytest` | Tests |

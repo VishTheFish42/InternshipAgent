@@ -7,7 +7,7 @@
 | ID | Requirement |
 |---|---|
 | FR-01 | The system SHALL search using broad domain-level keyword queries — not exact job titles. Queries SHALL cover the domains: software engineering, data science, machine learning, and AI, and SHALL include co-op variants (e.g., `"software engineering co-op"`, `"data science co-op"`). The system SHALL NOT filter by internship term (summer/fall/spring/co-op) at the search layer — all terms are included and term context is surfaced by the AI scorer. |
-| FR-02 | The system SHALL poll at least the following Tier 2 sources: Indeed (via public RSS feeds), Adzuna, Wellfound (AngelList), Y Combinator Work at a Startup, HackerNews "Who's Hiring", RemoteOK, and Dice. No paid aggregator API (e.g., JSearch) is required. |
+| FR-02 | The system SHALL poll the following Tier 2 sources, wired into the poll schedule: Indeed (via public RSS feeds), HackerNews "Who's Hiring", and RemoteOK on the main cycle; Adzuna on its own weekly job. For LinkedIn coverage specifically — not reachable via any free source — the system SHALL support JSearch (RapidAPI) as a metered aggregator, active when `JSEARCH_API_KEY` is configured, polled on its own job at a cadence sized to the configured plan's quota. Wellfound (AngelList), Y Combinator Work at a Startup, and Dice are **not currently implemented**: Wellfound has no scraper at all; YC and Dice scrapers exist in `src/scrapers/` but are not wired into any scheduled job. Planned for a later phase. |
 | FR-03 | The system SHALL also monitor individual company career pages directly, based on company names listed in `config/companies.yaml`. |
 | FR-04 | The system SHALL filter all results to United States locations (on-site, hybrid, or remote). |
 | FR-05 | The system SHALL exclude postings containing any keyword listed in `profile.yaml → preferences.keywords_excluded`. This filter is applied before AI scoring to avoid unnecessary API calls. |
@@ -36,7 +36,7 @@
 | FR-17 | Both resume PDFs and `profile.cache.json` SHALL be gitignored and never committed to the repository. |
 | FR-18 | The system SHALL detect when any file in `/resumes` has been added or modified (via SHA-256 hash comparison) and log a prominent warning prompting the user to run `--rebuild-profile`. |
 | FR-19 | Running `python -m src.main --rebuild-profile` SHALL re-extract and re-merge all resumes, overwrite `profile.cache.json`, and trigger re-scoring of all stored postings against the updated profile on the next run. |
-| FR-20 | `profile.yaml` SHALL contain only user preferences — target locations, match threshold, excluded keywords, digest settings. It SHALL NOT contain skills or experience. |
+| FR-20 | `profile.yaml` SHALL contain only user preferences — target locations, excluded keywords, digest settings, posting freshness window. It SHALL NOT contain skills or experience. |
 
 ### 1.4 Deduplication
 
@@ -52,7 +52,7 @@
 | ID | Requirement |
 |---|---|
 | FR-25 | The system SHALL score each new posting 0–100 against `profile.cache.json` using Claude. |
-| FR-26 | The system SHALL only send an alert for a posting if its score >= `profile.yaml → matching.min_score`. |
+| FR-26 | The system SHALL send an alert for every scored posting, regardless of score — there is no minimum-score gate. Each alert SHALL include the score and Claude's identified `missing_qualifications` so the user can judge fit themselves. |
 | FR-27 | The match score and a brief Claude reasoning summary SHALL be stored in the database for every scored posting. |
 | FR-28 | When `profile.cache.json` changes (new hash), the system SHALL re-score all previously stored postings where `notified = FALSE` and send new alerts for those that now qualify. |
 | FR-29 | The scoring prompt SHALL instruct Claude to evaluate holistic relevance across all four target domains (SWE, DS, ML, AI) — not just title keyword matching. |
@@ -62,19 +62,15 @@
 
 | ID | Requirement |
 |---|---|
-| FR-30 | The system SHALL send a Telegram message to the configured chat when a posting meets the match threshold. |
-| FR-30a | If the number of qualifying matches in a single polling cycle is below `BURST_THRESHOLD` (default: 20), the system SHALL send one individual message per match, each containing a direct application link, paced to respect Telegram's per-chat rate limit. If at or above the threshold, it SHALL send a single batched summary message listing all matches ranked by score (each with its own application link), with a note to check `db stats` for details. |
-| FR-31a | Every individual and batched full-match message SHALL contain a direct application URL per posting. |
-| FR-31 | Each individual message SHALL contain: company name, role title, location/remote status, match score, and direct application URL. |
+| FR-30 | The system SHALL send a Telegram message to the configured chat for every scored posting — there is no match threshold. |
+| FR-30a | If the number of scored postings in a single polling cycle is below `BURST_THRESHOLD` (default: 20), the system SHALL send one individual message per posting, each containing a direct application link, paced to respect Telegram's per-chat rate limit. If at or above the threshold, it SHALL send a single batched summary message listing all postings ranked by score (each with its own application link), with a note to check `db stats` for details. |
+| FR-31a | Every individual and batched message SHALL contain a direct application URL per posting. |
+| FR-31 | Each individual message SHALL contain: company name, role title, location/remote status, match score, missing qualifications, the source board the posting was found on, and direct application URL. |
 | FR-32 | The system SHALL send a digest message on a configurable interval (default: every hour) containing: number of new postings found and alerts sent since the last digest, and names of unresolved companies. |
 | FR-33 | The digest message is in addition to real-time alerts, not a replacement. |
 | FR-34 | All sent notifications SHALL be logged with timestamp and Telegram message ID. |
-| FR-34a | A posting scoring in `[profile.yaml → matching.partial_match_min_score, min_score)` SHALL be treated as a "partial match" and SHALL NOT trigger a full-match alert. |
-| FR-34b | A partial match SHALL only be surfaced if its `missing_qualifications` count is `<= profile.yaml → matching.max_missing_qualifications`. Postings missing more than that SHALL be silently skipped. |
-| FR-34c | Qualifying partial matches SHALL be routed by the same individual/burst logic and `BURST_THRESHOLD` as full matches (FR-30a): one message per posting below the threshold (each including its missing-qualifications list and a direct application link), one batched message at or above it. |
-| FR-34d | A posting SHALL receive at most one partial-match notice. This SHALL be tracked independently of full-match `notified` status, so that a later rescore (e.g. after a profile update) that pushes the same posting's score above `min_score` SHALL still trigger a full-match alert. |
 | FR-35a | The system SHALL exclude postings older than `profile.yaml → matching.max_posting_age_days` (default 7) from being stored, scored, or notified, based on `posted_at`. Postings with no reliable `posted_at` SHALL NOT be excluded on this basis. |
-| FR-36a | Every individual-mode alert (full or partial match) SHALL include an inline "Mark Applied" button. Tapping it SHALL mark the posting as applied and permanently exclude it from all future full- and partial-match notification, regardless of subsequent rescoring. |
+| FR-36a | Every individual-mode alert SHALL include an inline "Mark Applied" button. Tapping it SHALL mark the posting as applied and permanently exclude it from all future notification, regardless of subsequent rescoring. |
 | FR-37a | The system SHALL support `/pause` and `/resume` Telegram commands that toggle a master notification switch, independent of `profile.yaml → matching.digest_enabled` and of Telegram's own per-chat mute. While paused, the fetch/dedupe/score pipeline SHALL continue running normally; matching postings SHALL remain unnotified until `/resume` is issued, at which point they SHALL be sent normally on the next cycle — no matches SHALL be silently dropped due to a pause. |
 | FR-37b | Inbound Telegram commands and button taps SHALL only be honored if they originate from the configured `TELEGRAM_CHAT_ID`; updates from any other chat SHALL be silently ignored. |
 
@@ -143,8 +139,8 @@
 ## 3. Constraints
 
 - **Legal / scraping**: Prefer official ATS APIs (Greenhouse, Lever) and aggregator APIs (JSearch, Adzuna) over direct HTML scraping. All direct scrapers must respect `robots.txt` and rate limits.
-- **LinkedIn**: Direct scraping is not permitted. LinkedIn coverage comes exclusively through JSearch.
-- **Handshake**: Requires university SSO; direct access is not feasible. Covered best-effort through JSearch aggregation.
+- **LinkedIn**: Direct scraping is not permitted — LinkedIn actively blocks automated access and prohibits it in their ToS. LinkedIn coverage comes exclusively through JSearch, confirmed live: `job_publisher: "LinkedIn"` postings are returned by real test queries.
+- **Handshake**: Requires university SSO; direct access is not feasible. Not currently implemented — JSearch's aggregation has not been verified to include Handshake-exclusive postings, unlike the confirmed LinkedIn coverage above.
 - **Resume privacy**: PDFs never leave the local machine or Anthropic API. They are never committed to git or uploaded to Railway.
 - **Budget**: Under $10/month constrains model choice (Haiku preferred for scoring) and polling frequency.
 
