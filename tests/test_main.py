@@ -828,15 +828,50 @@ def test_process_telegram_updates_marks_applied_on_callback_query(engine: Engine
         session_scope(engine) as session,
         patch("src.main.get_updates", return_value=[update]),
         patch("src.main.answer_callback_query") as mock_answer,
+        patch("src.main.edit_message_mark_applied") as mock_edit,
     ):
         process_telegram_updates(session, _settings())
 
     mock_answer.assert_called_once()
     assert mock_answer.call_args.args[1] == "cbq-1"
+    mock_edit.assert_not_called()  # no prior notification exists for this posting
     with session_scope(engine) as session:
         assert session.get(JobPosting, pid).applied is True  # type: ignore[union-attr]
     with session_scope(engine) as session:
         assert get_bot_state(session).last_update_id == 501
+
+
+def test_process_telegram_updates_edits_original_message_on_applied_callback(
+    engine: Engine,
+) -> None:
+    """When the posting was previously notified, tapping "Mark Applied" edits
+    that original Telegram message for a visual confirmation, not just the
+    transient callback-query toast."""
+    with session_scope(engine) as session:
+        posting = _stored_posting(session)
+        pid = posting.id
+        mark_notified(session, pid, "123456789", "[InternAgent] Stripe · SWE Intern", "555")
+
+    update = {
+        "update_id": 501,
+        "callback_query": {
+            "id": "cbq-1",
+            "data": f"applied:{pid}",
+            "message": {"chat": {"id": 123456789}},
+        },
+    }
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.answer_callback_query"),
+        patch("src.main.edit_message_mark_applied") as mock_edit,
+    ):
+        process_telegram_updates(session, _settings())
+
+    mock_edit.assert_called_once_with(
+        "bot-token-test", "123456789", "555", "[InternAgent] Stripe · SWE Intern"
+    )
 
 
 def test_process_telegram_updates_ignores_callback_from_other_chat(engine: Engine) -> None:

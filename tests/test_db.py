@@ -15,6 +15,7 @@ from src.db import (
     Notification,
     get_bot_state,
     get_last_run_log,
+    get_latest_notification_for_posting,
     get_stats,
     get_unnotified_postings,
     get_unnotified_scored_postings,
@@ -432,6 +433,37 @@ def test_mark_notified_recipient_id_stored_as_given(engine: Engine) -> None:
         notif = mark_notified(s, pid, "987654321", "msg")
 
     assert notif.recipient_id == "987654321"
+
+
+# ── get_latest_notification_for_posting ─────────────────────────────────────────
+
+
+def test_get_latest_notification_for_posting_returns_most_recent(engine: Engine) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        pid = p.id
+        mark_notified(s, pid, "123", "first message", telegram_message_id="111")
+
+    with session_scope(engine) as s:
+        mark_notified(s, pid, "123", "second message", telegram_message_id="222")
+
+    with session_scope(engine) as s:
+        notif = get_latest_notification_for_posting(s, pid)
+
+    assert notif is not None
+    assert notif.message == "second message"
+    assert notif.telegram_message_id == "222"
+
+
+def test_get_latest_notification_for_posting_returns_none_when_never_notified(
+    engine: Engine,
+) -> None:
+    with session_scope(engine) as s:
+        p, _ = upsert_posting(s, _posting_data())
+        pid = p.id
+
+    with session_scope(engine) as s:
+        assert get_latest_notification_for_posting(s, pid) is None
 
 
 # ── log_run ───────────────────────────────────────────────────────────────────

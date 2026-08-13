@@ -47,6 +47,44 @@ def test_to_raw_posting_maps_fields():
     assert posting.posted_at == datetime(2026, 6, 1, 12, 0, 0)
 
 
+def test_to_raw_posting_falls_back_to_job_apply_link_when_not_direct():
+    """Matches the real live response captured during development: a single
+    non-direct apply_options entry re-hosted by BeBee, not the employer."""
+    result = dict(_FAKE_RESULT)
+    result["job_apply_is_direct"] = False
+    result["apply_options"] = [
+        {"apply_link": "https://bebee.com/us/jobs/abc123", "is_direct": False, "publisher": "BeBee"}
+    ]
+    posting = _to_raw_posting(result)
+    assert posting.apply_url == "https://www.linkedin.com/jobs/view/abc123"
+
+
+def test_to_raw_posting_uses_job_apply_link_when_marked_direct():
+    result = dict(_FAKE_RESULT)
+    result["job_apply_is_direct"] = True
+    posting = _to_raw_posting(result)
+    assert posting.apply_url == "https://www.linkedin.com/jobs/view/abc123"
+
+
+def test_to_raw_posting_prefers_direct_apply_option_over_job_apply_link():
+    result = dict(_FAKE_RESULT)
+    result["job_apply_is_direct"] = False
+    result["apply_options"] = [
+        {
+            "apply_link": "https://bebee.com/us/jobs/abc123",
+            "is_direct": False,
+            "publisher": "BeBee",
+        },
+        {
+            "apply_link": "https://stripe.com/jobs/abc123",
+            "is_direct": True,
+            "publisher": "Stripe",
+        },
+    ]
+    posting = _to_raw_posting(result)
+    assert posting.apply_url == "https://stripe.com/jobs/abc123"
+
+
 def test_to_raw_posting_encodes_publisher_into_source():
     posting = _to_raw_posting(_FAKE_RESULT_REMOTE_NO_LOCATION)
     assert posting.source == "jsearch:ZipRecruiter"

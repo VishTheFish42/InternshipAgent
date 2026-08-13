@@ -27,6 +27,7 @@ from src.db import (
     Notification,
     get_bot_state,
     get_last_run_log,
+    get_latest_notification_for_posting,
     get_unnotified_postings,
     get_unnotified_scored_postings,
     get_unresolved_companies,
@@ -45,6 +46,7 @@ from src.matcher import ScoringResult, hash_profile, score_postings
 from src.notifier import (
     MatchInfo,
     answer_callback_query,
+    edit_message_mark_applied,
     format_burst_message,
     format_digest,
     format_individual_message,
@@ -306,6 +308,11 @@ def process_telegram_updates(session: Session, settings: Settings) -> None:
                 try:
                     posting_id = int(data.split(":", 1)[1])
                     mark_applied(session, posting_id)
+                    notif = get_latest_notification_for_posting(session, posting_id)
+                    if notif is not None and notif.telegram_message_id:
+                        edit_message_mark_applied(
+                            bot_token, chat_id, notif.telegram_message_id, notif.message
+                        )
                     answer_callback_query(bot_token, callback["id"], text="Marked applied ✅")
                 except (ValueError, LookupError) as exc:
                     _log.warning("Failed to process applied callback %r: %s", data, exc)

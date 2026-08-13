@@ -11,6 +11,7 @@ from src.notifier import (
     _redact_chat_id,
     answer_callback_query,
     applied_button,
+    edit_message_mark_applied,
     format_burst_message,
     format_digest,
     format_individual_message,
@@ -485,3 +486,36 @@ def test_answer_callback_query_sends_expected_payload():
 def test_answer_callback_query_never_raises_on_network_error():
     with patch("src.notifier.httpx.post", side_effect=RuntimeError("boom")):
         answer_callback_query("bot-token", "cbq-1")  # should not raise
+
+
+# ── edit_message_mark_applied ────────────────────────────────────────────────
+
+
+def test_edit_message_mark_applied_sends_expected_payload():
+    resp = MagicMock()
+    resp.json.return_value = {"ok": True}
+    with patch("src.notifier.httpx.post", return_value=resp) as mock_post:
+        edit_message_mark_applied("bot-token", "12345", "999", "[InternAgent] Stripe · SWE Intern")
+
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["chat_id"] == "12345"
+    assert payload["message_id"] == 999
+    assert payload["text"] == "[InternAgent] Stripe · SWE Intern\n\n✅ Applied"
+    assert payload["reply_markup"] == {"inline_keyboard": []}
+
+
+def test_edit_message_mark_applied_never_raises_on_network_error():
+    with patch("src.notifier.httpx.post", side_effect=RuntimeError("boom")):
+        edit_message_mark_applied("bot-token", "12345", "999", "original text")  # should not raise
+
+
+def test_edit_message_mark_applied_logs_but_does_not_raise_on_api_error(caplog):
+    resp = MagicMock()
+    resp.json.return_value = {"ok": False, "description": "message is not modified"}
+    with (
+        patch("src.notifier.httpx.post", return_value=resp),
+        caplog.at_level(logging.WARNING),
+    ):
+        edit_message_mark_applied("bot-token", "12345", "999", "original text")
+
+    assert "message is not modified" in caplog.text

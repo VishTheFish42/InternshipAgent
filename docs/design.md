@@ -213,6 +213,7 @@ Indeed RSS, HN, and RemoteOK run the same keyword queries sequentially within th
 - **Query shape**: one broad query per poll, `country=us`, `employment_types=INTERN`, `date_posted=week` — deliberately not looped per domain keyword like Indeed RSS, since every request is metered. **Alternates between two queries by UTC hour** (`(hour // 4) % 2`): `INTERN_QUERY` (`"software engineering intern in the United States"`) on even 4-hour slots, `COOP_QUERY` (`"...co-op..."`) on odd ones — added after discovering the single intern-only query missed co-op-only listings that never say "intern". Each variant polls roughly every 8 hours.
 - **Cadence**: its own scheduled job, independent of the main cycle — currently every 4 hours (~180 requests/month total across both query variants), sized to fit a 200/month free-tier plan. Re-tune the interval (`queries_per_poll × polls_per_day × 30 ≤ plan quota`) if the plan differs — querying both variants every poll instead of alternating would double this to ~360/month.
 - **Source labeling**: each result includes `job_publisher` (e.g. `"LinkedIn"`, `"ZipRecruiter"`, `"BeBee"`) — the exact board it was aggregated from. Encoded into `source` as `jsearch:{publisher}`, the same compound-source convention `greenhouse.py`/`lever.py` use for company slugs, and surfaced to the user as the message's `Source:` line (§9.2)
+- **Apply link prefers the employer's own page over the aggregator's** (`_direct_apply_url()` in `jsearch.py`): `job_apply_link` is frequently a re-poster, not the employer — confirmed live, a captured response had `job_apply_link` pointing to BeBee with `job_apply_is_direct: false`. JSearch separately provides `apply_options`, a list of every known application route each with its own `is_direct` flag; the scraper uses the first direct one if any exists, and only falls back to the possibly-indirect `job_apply_link` if nothing in `apply_options` is marked direct either.
 - **Verified live**: a test query returned 10 postings, 4 explicitly `job_publisher: LinkedIn`
 - **Dedup key**: `(source, external_id) = ("jsearch:{publisher}", job_id)` — unlike other sources, `source` itself is compound here rather than a fixed string
 
@@ -568,7 +569,7 @@ Total: well within the $10/month budget.
 
 The notifier operates in one of two modes per polling cycle, depending on how many scored postings there are to notify (`notify_matches()`). There is no separate full/partial-match distinction — every posting at or above the domain-relevance floor goes through this same single path (§8.2a).
 
-**Individual mode** (< `BURST_THRESHOLD` postings, default 20): one message per posting, each including its score, reasoning, missing qualifications, source board, and a direct apply link, plus a "Mark Applied" button. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 postings takes ~15 seconds to fully notify, not instant.
+**Individual mode** (< `BURST_THRESHOLD` postings, default 20): one message per posting, each including its score, reasoning, missing qualifications, source board, and an apply link — direct to the employer where the source makes that possible (Greenhouse, Lever, JSearch; see §4.1a), otherwise the source's own listing (Indeed, Adzuna) — plus a "Mark Applied" button. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 postings takes ~15 seconds to fully notify, not instant.
 
 ```
 [InternAgent] Stripe · Software Engineering Intern · Remote
@@ -677,6 +678,11 @@ every hour (digest job):
 every 2 minutes (telegram command poll):
   └── getUpdates since last cursor
   └── callback_query "applied:{id}" → mark_applied, only from TELEGRAM_CHAT_ID
+        → look up the posting's Notification row (get_latest_notification_
+          for_posting); if one exists, edit that original message
+          (edit_message_mark_applied) to append "✅ Applied" and drop the
+          button — the answerCallbackQuery toast alone is transient and
+          leaves no trace once scrolled past
   └── message "/pause" or "/resume" → toggle bot_state.notifications_paused,
       only from TELEGRAM_CHAT_ID
 ```

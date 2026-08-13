@@ -300,6 +300,19 @@ def mark_notified(
     return notif
 
 
+def get_latest_notification_for_posting(session: Session, posting_id: int) -> Notification | None:
+    """Most recent Notification row for a posting — used to locate the
+    Telegram message_id to edit when the user taps "Mark Applied", so the
+    original alert can be visually updated rather than leaving the tap
+    unconfirmed beyond a transient callback-query toast."""
+    return session.execute(
+        select(Notification)
+        .where(Notification.job_posting_id == posting_id)
+        .order_by(Notification.sent_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def mark_applied(session: Session, posting_id: int) -> JobPosting:
     """
     Mark a posting as applied — a user-driven, belt-and-suspenders signal

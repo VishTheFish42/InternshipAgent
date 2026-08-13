@@ -266,6 +266,38 @@ def answer_callback_query(
         _log.warning("Telegram answerCallbackQuery failed: %s", exc)
 
 
+def edit_message_mark_applied(
+    bot_token: str, chat_id: str, message_id: str, original_text: str
+) -> None:
+    """Edit a previously-sent individual alert to visually confirm "Mark
+    Applied" was recorded — the callback-query toast alone (see
+    answer_callback_query) disappears in a couple seconds and leaves no trace
+    once you scroll past it. Appends a confirmation line to the message text
+    and removes the now-redundant button (mark_applied is idempotent, so
+    leaving it live risks nothing functionally, but there's no reason to keep
+    inviting a tap on a posting already marked applied).
+
+    Never raises. Telegram returns ok:false rather than an HTTP error for
+    "message is not modified" (e.g. two near-simultaneous taps racing this
+    edit) — that's treated as a harmless no-op like any other failure here."""
+    try:
+        resp = httpx.post(
+            _API_BASE.format(token=bot_token, method="editMessageText"),
+            json={
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+                "text": f"{original_text}\n\n✅ Applied",
+                "reply_markup": {"inline_keyboard": []},
+            },
+            timeout=10.0,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            _log.warning("Telegram editMessageText failed: %s", data.get("description"))
+    except Exception as exc:
+        _log.warning("Telegram editMessageText failed: %s", exc)
+
+
 # ── Public entrypoint ─────────────────────────────────────────────────────────
 
 

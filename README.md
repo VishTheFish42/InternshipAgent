@@ -140,7 +140,7 @@ matching:
 
 ## Marking postings as applied, and pausing notifications
 
-Every individual-mode alert carries a **"✅ Mark Applied" button**. Tap it and the posting is permanently excluded from future alerts, even if a later profile update would otherwise change its score — a belt-and-suspenders safety net on top of the agent's own deduplication.
+Every individual-mode alert carries a **"✅ Mark Applied" button**. Tap it and the posting is permanently excluded from future alerts, even if a later profile update would otherwise change its score — a belt-and-suspenders safety net on top of the agent's own deduplication. The original message is also edited to append "✅ Applied" and the button is removed, so there's a lasting visual record in the chat of what you've already handled — not just a transient tap confirmation.
 
 Send **`/pause`** to the bot at any time to stop receiving messages, and **`/resume`** to turn them back on. This is a real kill switch, not Telegram's own per-chat mute: while paused, the agent keeps polling, deduping, and scoring underneath — matches just wait unsent until you resume, so nothing found while paused is lost. Both the button and these commands only work from your configured `TELEGRAM_CHAT_ID`; messages from any other chat are ignored.
 
@@ -188,6 +188,8 @@ You don't need to list every company. The agent uses a **two-tier strategy**:
 | **Tier 2** — Broad search | Indeed RSS · Adzuna · HackerNews · RemoteOK · JSearch | Every company posting on Indeed, RemoteOK, HN's monthly hiring thread, or — via JSearch — LinkedIn, Glassdoor, and ZipRecruiter | Slightly slower: depends on board indexing |
 
 **LinkedIn coverage:** direct LinkedIn scraping isn't done — LinkedIn actively blocks it and prohibits it in their Terms of Service. **JSearch** (RapidAPI) is the only source that reaches LinkedIn postings, via a legitimate metered API rather than scraping. It requires a `JSEARCH_API_KEY` (see Environment variables below) and polls on its own job every 4 hours (~180 requests/month, sized for a 200/month free-tier plan — adjust `IntervalTrigger(hours=4)` in `main.py` if your plan's quota differs). Without a key set, this source is silently skipped — everything else still runs.
+
+**Apply links point to the employer, not a job board, wherever that's possible.** Greenhouse and Lever are already the employer's own ATS, so those links are direct by construction. JSearch's aggregated results often re-host through a secondary site (LinkedIn, BeBee, etc.) rather than the employer's own page — JSearch tells us which application route is actually direct via `apply_options[].is_direct`, and the scraper picks that one when it exists, falling back to whatever it gives us otherwise. Indeed RSS and Adzuna don't expose an equivalent "this one's direct" signal in their public APIs, so those two still link through the job board itself — there's no clean fix available without following redirect chains per posting, which trades reliability and latency for a source that's already a small share of total coverage.
 
 **Note:** the YC and Dice scrapers exist in `src/scrapers/` but aren't wired into the poll schedule yet (`_SOURCES` in `main.py`) — they're dormant, not actively polling, despite appearing in earlier design docs.
 

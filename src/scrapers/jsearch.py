@@ -33,6 +33,25 @@ INTERN_QUERY = "software engineering intern in the United States"
 COOP_QUERY = "software engineering co-op in the United States"
 
 
+def _direct_apply_url(result: dict[str, Any]) -> str:
+    """Prefer the employer's own application page over the aggregator's
+    (LinkedIn/BeBee/etc.) re-listing. JSearch's job_apply_link is often a
+    re-poster, not the source — confirmed in a live test where job_apply_link
+    pointed to BeBee with job_apply_is_direct: false. apply_options carries
+    every known application route with an is_direct flag per option; use the
+    first direct one if any exists, otherwise fall back to job_apply_link."""
+    if result.get("job_apply_is_direct"):
+        link = result.get("job_apply_link")
+        if link:
+            return str(link)
+
+    for option in result.get("apply_options") or []:
+        if option.get("is_direct") and option.get("apply_link"):
+            return str(option["apply_link"])
+
+    return str(result.get("job_apply_link") or "")
+
+
 def _to_raw_posting(result: dict[str, Any]) -> RawPosting:
     posted_at = None
     raw_date = result.get("job_posted_at_datetime_utc")
@@ -47,7 +66,7 @@ def _to_raw_posting(result: dict[str, Any]) -> RawPosting:
             posted_at = None
 
     location = ", ".join(p for p in [result.get("job_city"), result.get("job_state")] if p) or None
-    apply_url = result.get("job_apply_link") or ""
+    apply_url = _direct_apply_url(result)
     publisher = result.get("job_publisher") or "Unknown"
 
     return RawPosting(
