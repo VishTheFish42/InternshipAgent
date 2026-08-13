@@ -40,6 +40,7 @@ from src.main import (
 )
 from src.matcher import ScoredPosting, ScoringResult
 from src.notifier import SendResult
+from src.scrapers import jsearch
 from src.scrapers.base import RawPosting
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -740,7 +741,7 @@ def test_run_adzuna_poll_skipped_without_credentials(engine: Engine) -> None:
     mock_fetch.assert_not_called()
 
 
-def test_run_adzuna_poll_fetches_and_stores(engine: Engine) -> None:
+def test_run_adzuna_poll_fetches_both_internship_and_coop_queries(engine: Engine) -> None:
     postings = [_raw_posting(source="adzuna", external_id="1")]
 
     with (
@@ -749,7 +750,9 @@ def test_run_adzuna_poll_fetches_and_stores(engine: Engine) -> None:
     ):
         run_adzuna_poll(session, _settings(adzuna_app_id="app-id", adzuna_app_key="app-key"))
 
-    mock_fetch.assert_called_once_with("app-id", "app-key")
+    assert mock_fetch.call_count == 2
+    mock_fetch.assert_any_call("app-id", "app-key")
+    mock_fetch.assert_any_call("app-id", "app-key", what="co-op")
     with session_scope(engine) as session:
         assert session.query(JobPosting).count() == 1
 
@@ -767,18 +770,32 @@ def test_run_jsearch_poll_skipped_without_credentials(engine: Engine) -> None:
     mock_fetch.assert_not_called()
 
 
-def test_run_jsearch_poll_fetches_and_stores(engine: Engine) -> None:
+def test_run_jsearch_poll_uses_intern_query_in_even_slot(engine: Engine) -> None:
     postings = [_raw_posting(source="jsearch", external_id="1")]
 
     with (
         session_scope(engine) as session,
+        patch("src.main._now", return_value=datetime(2026, 1, 1, 0, 0, 0)),
         patch("src.main.jsearch.fetch", return_value=postings) as mock_fetch,
     ):
         run_jsearch_poll(session, _settings(jsearch_api_key="rapidapi-key"))
 
-    mock_fetch.assert_called_once_with("rapidapi-key")
+    mock_fetch.assert_called_once_with("rapidapi-key", query=jsearch.INTERN_QUERY)
     with session_scope(engine) as session:
         assert session.query(JobPosting).count() == 1
+
+
+def test_run_jsearch_poll_uses_coop_query_in_odd_slot(engine: Engine) -> None:
+    postings = [_raw_posting(source="jsearch", external_id="1")]
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main._now", return_value=datetime(2026, 1, 1, 4, 0, 0)),
+        patch("src.main.jsearch.fetch", return_value=postings) as mock_fetch,
+    ):
+        run_jsearch_poll(session, _settings(jsearch_api_key="rapidapi-key"))
+
+    mock_fetch.assert_called_once_with("rapidapi-key", query=jsearch.COOP_QUERY)
 
 
 # ── process_telegram_updates ─────────────────────────────────────────────────

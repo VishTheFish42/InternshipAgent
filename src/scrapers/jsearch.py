@@ -26,6 +26,12 @@ from src.scrapers.base import RawPosting
 _SEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
 _HOST = "jsearch.p.rapidapi.com"
 
+# Two query variants, alternated per poll by the caller (main.py) rather than
+# both queried every poll — a second query every 4 hours would double the
+# ~180/month request volume to ~360/month, over a 200/month free-tier quota.
+INTERN_QUERY = "software engineering intern in the United States"
+COOP_QUERY = "software engineering co-op in the United States"
+
 
 def _to_raw_posting(result: dict[str, Any]) -> RawPosting:
     posted_at = None
@@ -58,9 +64,7 @@ def _to_raw_posting(result: dict[str, Any]) -> RawPosting:
     )
 
 
-def fetch(
-    api_key: str, *, query: str = "software engineering intern in the United States"
-) -> list[RawPosting]:
+def fetch(api_key: str, *, query: str = INTERN_QUERY) -> list[RawPosting]:
     """
     Single broad query per poll — deliberately NOT looped per domain keyword
     like Indeed RSS. JSearch meters every request against a monthly quota on

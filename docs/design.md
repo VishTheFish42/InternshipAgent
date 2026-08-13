@@ -210,8 +210,8 @@ Indeed RSS, HN, and RemoteOK run the same keyword queries sequentially within th
 - **Provider**: JSearch on RapidAPI — the only source that reaches LinkedIn, Glassdoor, and ZipRecruiter postings, aggregated through a legitimate metered API rather than direct scraping (see the LinkedIn constraint, §3 of `requirements.md`)
 - **Endpoint**: `GET https://jsearch.p.rapidapi.com/search-v2` — **not** the more commonly documented `/search`, which 404s on this project's subscription; confirmed by live-testing against the real key, since RapidAPI's "JSearch" listings vary across publishers in which endpoints they actually expose. Results are nested under `data.jobs`, not `data` directly.
 - **Auth**: `X-RapidAPI-Key` / `X-RapidAPI-Host` headers; requires `JSEARCH_API_KEY`
-- **Query shape**: one broad query per poll (`"software engineering intern in the United States"`), `country=us`, `employment_types=INTERN`, `date_posted=week` — deliberately not looped per domain keyword like Indeed RSS, since every request is metered
-- **Cadence**: its own scheduled job, independent of the main cycle — currently every 4 hours (~180 requests/month), sized to fit a 200/month free-tier plan. Re-tune the interval (`queries_per_poll × polls_per_day × 30 ≤ plan quota`) if the plan differs.
+- **Query shape**: one broad query per poll, `country=us`, `employment_types=INTERN`, `date_posted=week` — deliberately not looped per domain keyword like Indeed RSS, since every request is metered. **Alternates between two queries by UTC hour** (`(hour // 4) % 2`): `INTERN_QUERY` (`"software engineering intern in the United States"`) on even 4-hour slots, `COOP_QUERY` (`"...co-op..."`) on odd ones — added after discovering the single intern-only query missed co-op-only listings that never say "intern". Each variant polls roughly every 8 hours.
+- **Cadence**: its own scheduled job, independent of the main cycle — currently every 4 hours (~180 requests/month total across both query variants), sized to fit a 200/month free-tier plan. Re-tune the interval (`queries_per_poll × polls_per_day × 30 ≤ plan quota`) if the plan differs — querying both variants every poll instead of alternating would double this to ~360/month.
 - **Source labeling**: each result includes `job_publisher` (e.g. `"LinkedIn"`, `"ZipRecruiter"`, `"BeBee"`) — the exact board it was aggregated from. Encoded into `source` as `jsearch:{publisher}`, the same compound-source convention `greenhouse.py`/`lever.py` use for company slugs, and surfaced to the user as the message's `Source:` line (§9.2)
 - **Verified live**: a test query returned 10 postings, 4 explicitly `job_publisher: LinkedIn`
 - **Dedup key**: `(source, external_id) = ("jsearch:{publisher}", job_id)` — unlike other sources, `source` itself is compound here rather than a fixed string
@@ -223,6 +223,7 @@ Indeed RSS, HN, and RemoteOK run the same keyword queries sequentially within th
 - **Auth**: `app_id` + `app_key`
 - **Free tier**: 250 calls/month
 - **Filter**: `where=us`, `sort_by=date`, `full_time=0`
+- **Query shape**: unlike JSearch, **both** `what="internship"` and `what="co-op"` are queried every weekly poll rather than alternated — two calls/week (~8/month) is trivial against a 250/month quota, so there's no need to trade off coverage lag for quota safety the way JSearch (4-hour cadence, tighter quota) does
 - **Dedup key**: `adzuna:{id}`
 
 ### 4.3 Wellfound / AngelList (startup-specific) — NOT IMPLEMENTED
@@ -249,7 +250,7 @@ Designed in but never built — there is no `src/scrapers/wellfound.py`. `WELLFO
 
 - **Provider**: Algolia HN Search API (free, no auth)
 - **Covers**: Monthly HN hiring threads (`Ask HN: Who is hiring?`). Extremely popular among AI labs, dev-tool startups, and research orgs — many post only here
-- **Mechanism**: Parse the current month's thread; extract comments mentioning "intern" or "internship"; extract company name and any URL; run through AI scorer like a normal posting
+- **Mechanism**: Parse the current month's thread; extract comments mentioning "intern"/"internship" or "co-op" (word-boundary regex, so it doesn't false-positive on "cooperative"); extract company name and any URL; run through AI scorer like a normal posting
 - **Dedup key**: `hn:{comment_id}`
 - **Cadence**: Wired into the main poll cycle (`_SOURCES` in `main.py`) — re-fetched every cycle (default hourly), same as Indeed RSS and RemoteOK, not on a separate monthly/daily schedule
 
@@ -257,7 +258,7 @@ Designed in but never built — there is no `src/scrapers/wellfound.py`. `WELLFO
 
 - **Provider**: RemoteOK public API (`remoteok.com/api`) — free, no auth, no rate limit specified
 - **Covers**: Remote-only internships and entry-level roles across all tech companies; good coverage of distributed/async-first companies that don't post on LinkedIn
-- **Filter**: tags include `intern` or `internship`; parsed from JSON feed. **Deliberately does not match the bare `junior` tag** — that was matched originally, but RemoteOK tags junior roles across every field (marketing, design, sales, ...), not just software, and it was letting through postings with zero domain relevance. Found and fixed after the no-score-floor change (§8.2a) made this previously-silent noise visible as real Telegram messages.
+- **Filter**: tags include `intern`, `internship`, `co-op`, or `coop`, OR the position title matches `intern` or a word-boundary `co-?op` regex (same false-positive guard as HN's, so "Cooperative Partnerships Manager" doesn't match); parsed from JSON feed. **Deliberately does not match the bare `junior` tag** — that was matched originally, but RemoteOK tags junior roles across every field (marketing, design, sales, ...), not just software, and it was letting through postings with zero domain relevance. Found and fixed after the no-score-floor change (§8.2a) made this previously-silent noise visible as real Telegram messages.
 - **Dedup key**: `remoteok:{id}`
 
 ### 4.7 Dice — NOT WIRED IN
@@ -295,9 +296,9 @@ The same posting can appear in both tiers (e.g., a Stripe job found via Indeed R
 
 ### 5.2 Domain-based keyword search (not title matching)
 
-The agent searches using broad domain-level keyword combinations. The AI scorer handles fine-grained relevance filtering — the search layer casts a wide net.
+**Correction (2026-08-12): this section previously implied all Tier 2 sources run the query list below — only Indeed RSS actually does.** HN and RemoteOK fetch their own bulk feed (the current month's thread; the full RemoteOK API dump) and apply an independent regex/tag filter, never touching `build_queries()`. Adzuna and JSearch each run their own one-or-two hand-written broad queries (§4.2, §4.1a), not this list either. `build_queries()` in `src/scrapers/base.py` is Indeed RSS's alone.
 
-**Full query list** (run sequentially against Indeed RSS, HN, and RemoteOK each main cycle — see §4's intro; Adzuna and JSearch use one broad query instead, not this full list):
+**Indeed RSS's full query list** (looped sequentially, one query per `httpx` call, within the main cycle):
 ```
 # Core SWE / DS / ML / AI
 "software engineering intern"
@@ -316,11 +317,22 @@ The agent searches using broad domain-level keyword combinations. The AI scorer 
 "software co-op"
 "machine learning co-op"
 "data science co-op"
-
-# All terms (agent does not filter by season — catches summer, fall, spring, co-op)
 ```
 
 The agent does not filter by semester or term — it catches summer, fall, spring, and co-op postings alike. Season filtering would require parsing unstructured job description text and is left to the AI scorer (which can flag term in its reasoning).
+
+**Co-op coverage varies by source** (found and fixed 2026-08-12, after a user question specifically about co-op coverage): HN's and RemoteOK's filters originally matched only `intern`/`internship`, silently missing co-op-only listings (ones that never use the word "intern"). Current state per source:
+
+| Source | Matches co-op? |
+|---|---|
+| Greenhouse / Lever (Tier 1) | ✅ always did — `intern\|co-?op` title regex |
+| Indeed RSS | ✅ always did — explicit co-op terms in `build_queries()` above |
+| HN | ✅ fixed — regex now `\bintern(ship)?\b\|\bco-?op\b` |
+| RemoteOK | ✅ fixed — tags now include `co-op`/`coop`, position regex matches `co-?op` too |
+| Adzuna | ✅ fixed — queries both `what="internship"` and `what="co-op"` every weekly poll |
+| JSearch | ✅ fixed — alternates `INTERN_QUERY`/`COOP_QUERY` by UTC hour (§4.1a); not queried simultaneously, to stay under quota |
+
+All the `co-?op` regexes use a `\b` word boundary on both sides specifically to avoid false-matching "cooperative" (e.g. "a cooperative team culture") — confirmed by test cases in `tests/test_scrapers_hn.py` and `tests/test_scrapers_remoteok.py`.
 
 **Filters applied at the search layer** (before storage — vary per source, see §4 for each one's exact query params):
 - Country: United States, where the source's API supports it (Indeed, Adzuna, JSearch); HN and RemoteOK have no country param and rely entirely on the AI scorer to catch non-US postings

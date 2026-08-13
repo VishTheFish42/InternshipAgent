@@ -11,7 +11,7 @@ import httpx
 from src.scrapers.base import RawPosting
 
 _SEARCH_URL = "https://hn.algolia.com/api/v1/search_by_date"
-_INTERN_RE = re.compile(r"intern(ship)?\b", re.IGNORECASE)
+_INTERN_RE = re.compile(r"\bintern(ship)?\b|\bco-?op\b", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://\S+")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -94,7 +94,7 @@ def _to_raw_posting(comment: dict[str, Any]) -> RawPosting:
 
 
 def fetch_current_month_postings() -> list[RawPosting]:
-    """Find this month's thread and extract every comment that mentions an internship."""
+    """Find this month's thread and extract every comment that mentions an internship or co-op."""
     thread_id = find_current_thread_id()
     if thread_id is None:
         return []

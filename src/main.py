@@ -459,16 +459,21 @@ def run_digest(session: Session, settings: Settings) -> None:
 def run_adzuna_poll(session: Session, settings: Settings) -> None:
     """
     Poll Adzuna on its own weekly job, deliberately separate from the main
-    cycle — its free tier is 250 calls/month, and this makes one call per
-    week (~4/month), leaving headroom. New postings are stored unscored;
-    the next main cycle picks them up for scoring like any other source.
+    cycle — its free tier is 250 calls/month. Runs two queries ("internship"
+    and "co-op") every week rather than one, since "internship" alone misses
+    co-op-only listings that never use the word "internship" — even doubled,
+    that's ~8/month, far under the 250/month quota. New postings are stored
+    unscored; the next main cycle picks them up for scoring like any other
+    source.
     """
     if not (settings.adzuna_app_id and settings.adzuna_app_key):
         _log.info("Adzuna poll skipped: ADZUNA_APP_ID/ADZUNA_APP_KEY not configured")
         return
 
     max_posting_age_days = _load_yaml_config().get("matching", {}).get("max_posting_age_days", 7)
-    postings = adzuna.fetch(settings.adzuna_app_id, settings.adzuna_app_key)
+    postings = adzuna.fetch(settings.adzuna_app_id, settings.adzuna_app_key) + adzuna.fetch(
+        settings.adzuna_app_id, settings.adzuna_app_key, what="co-op"
+    )
     new_count = _dedupe_and_store(session, postings, max_posting_age_days)
     _log.info("Adzuna poll: %d found, %d new", len(postings), new_count)
 
@@ -481,18 +486,32 @@ def run_jsearch_poll(session: Session, settings: Settings) -> None:
     200/month free-tier quota (every 2 hours would be ~360/month — over it).
     Adjust the interval to match your actual RapidAPI plan's quota if it
     differs. This is the only source that reaches LinkedIn postings (see the
-    LinkedIn constraint in docs/requirements.md). New postings are stored
-    unscored; the next main cycle picks them up for scoring like any other
-    source.
+    LinkedIn constraint in docs/requirements.md).
+
+    Alternates between the intern and co-op query each poll (by UTC hour)
+    rather than querying both every time — querying "intern" alone misses
+    co-op-only listings that never use the word "internship", but querying
+    both every poll would double the request volume past the 200/month quota.
+    Each variant still gets polled roughly every 8 hours.
+
+    New postings are stored unscored; the next main cycle picks them up for
+    scoring like any other source.
     """
     if not settings.jsearch_api_key:
         _log.info("JSearch poll skipped: JSEARCH_API_KEY not configured")
         return
 
     max_posting_age_days = _load_yaml_config().get("matching", {}).get("max_posting_age_days", 7)
-    postings = jsearch.fetch(settings.jsearch_api_key)
+    is_intern_slot = (_now().hour // 4) % 2 == 0
+    query = jsearch.INTERN_QUERY if is_intern_slot else jsearch.COOP_QUERY
+    postings = jsearch.fetch(settings.jsearch_api_key, query=query)
     new_count = _dedupe_and_store(session, postings, max_posting_age_days)
-    _log.info("JSearch poll: %d found, %d new", len(postings), new_count)
+    _log.info(
+        "JSearch poll (%s): %d found, %d new",
+        "intern" if is_intern_slot else "co-op",
+        len(postings),
+        new_count,
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

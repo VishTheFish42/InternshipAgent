@@ -47,6 +47,19 @@ def test_is_internship_comment_rejects_unrelated_text():
     assert not _is_internship_comment("Hiring senior backend engineers")
 
 
+def test_is_internship_comment_matches_coop():
+    assert _is_internship_comment("Software Engineering Co-op - Fall 2026")
+
+
+def test_is_internship_comment_matches_coop_without_hyphen():
+    assert _is_internship_comment("Looking for a coop student, no hyphen")
+
+
+def test_is_internship_comment_rejects_cooperative_as_false_positive():
+    """Word-boundary check: 'cooperative' should not match the co-op regex."""
+    assert not _is_internship_comment("We value a cooperative team culture")
+
+
 # ── _extract_company ──────────────────────────────────────────────────────────
 
 

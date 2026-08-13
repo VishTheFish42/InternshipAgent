@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,10 +12,11 @@ from src.scrapers.base import RawPosting
 
 _API_URL = "https://remoteok.com/api"
 _USER_AGENT = "InternshipAgent/1.0 (+personal internship alert tool)"
-_INTERN_TAGS = {"intern", "internship"}
+_INTERN_TAGS = {"intern", "internship", "co-op", "coop"}
 # Deliberately excludes "junior" — RemoteOK tags junior roles across every field
 # (marketing, design, sales, ...), not just software; that bare tag was letting
 # through postings with no software relevance at all.
+_COOP_RE = re.compile(r"\bco-?op\b", re.IGNORECASE)
 
 
 def _fetch_jobs() -> list[dict[str, Any]]:
@@ -29,7 +31,8 @@ def _is_internship(job: dict[str, Any]) -> bool:
     tags = {str(t).lower() for t in job.get("tags", [])}
     if tags & _INTERN_TAGS:
         return True
-    return "intern" in (job.get("position") or "").lower()
+    position = (job.get("position") or "").lower()
+    return "intern" in position or bool(_COOP_RE.search(position))
 
 
 def _to_raw_posting(job: dict[str, Any]) -> RawPosting:
@@ -61,6 +64,6 @@ def _to_raw_posting(job: dict[str, Any]) -> RawPosting:
 
 
 def fetch() -> list[RawPosting]:
-    """Fetch the full RemoteOK feed and filter to internship/junior-tagged roles."""
+    """Fetch the full RemoteOK feed and filter to internship/co-op-tagged roles."""
     jobs = _fetch_jobs()
     return [_to_raw_posting(j) for j in jobs if _is_internship(j)]

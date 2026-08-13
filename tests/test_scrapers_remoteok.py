@@ -56,6 +56,20 @@ def test_is_internship_rejects_bare_junior_tag():
     assert not _is_internship(_JUNIOR_JOB)
 
 
+def test_is_internship_matches_coop_tag():
+    assert _is_internship({"position": "Backend Co-op", "tags": ["co-op", "python"]})
+
+
+def test_is_internship_matches_coop_in_position_without_tag():
+    job = {"position": "Software Engineering Co-op - Fall 2026", "tags": ["python"]}
+    assert _is_internship(job)
+
+
+def test_is_internship_rejects_cooperative_as_false_positive():
+    job = {"position": "Cooperative Partnerships Manager", "tags": ["sales"]}
+    assert not _is_internship(job)
+
+
 def test_is_internship_matches_intern_in_position_without_tag():
     job = {"position": "Data Science Intern", "tags": ["python"]}
     assert _is_internship(job)
