@@ -13,7 +13,6 @@ from src.notifier import (
     applied_button,
     edit_message_mark_applied,
     format_burst_message,
-    format_digest,
     format_individual_message,
     get_updates,
     notify_matches,
@@ -85,25 +84,25 @@ def test_format_individual_message_includes_all_fields():
     assert "Stripe" in body
     assert "Software Engineering Intern" in body
     assert "Remote" in body
-    assert "88" in body
+    assert "88/100" in body
     assert "Great fit." in body
     assert "Kubernetes" in body
-    assert "https://apply.example/1" in body
+    assert 'href="https://apply.example/1"' in body
 
 
 def test_format_individual_message_omits_location_when_none():
     body = format_individual_message(
         "Stripe", "SWE Intern", None, 88, "Great fit.", [], "https://apply.example/1"
     )
-    assert " · Remote" not in body
-    assert "Stripe · SWE Intern" in body
+    assert "📍" not in body
+    assert "<b>Stripe</b> — SWE Intern" in body
 
 
 def test_format_individual_message_handles_empty_missing_list():
     body = format_individual_message(
         "Stripe", "SWE Intern", "Remote", 88, "Great fit.", [], "https://apply.example/1"
     )
-    assert "Missing: none listed" in body
+    assert "<b>Missing:</b> none listed" in body
 
 
 def test_format_individual_message_stays_within_message_budget():
@@ -151,14 +150,43 @@ def test_format_individual_message_includes_source_line_when_given():
         "https://apply.example/1",
         "jsearch:LinkedIn",
     )
-    assert "Source: LinkedIn" in body
+    assert "🔗 LinkedIn" in body
 
 
 def test_format_individual_message_omits_source_line_when_empty():
     body = format_individual_message(
         "Stripe", "SWE Intern", "Remote", 88, "Great fit.", [], "https://apply.example/1", ""
     )
-    assert "Source:" not in body
+    assert "🔗" not in body
+
+
+def test_format_individual_message_escapes_html_special_characters():
+    """Company/title/reasoning/missing come from AI output or a scraped
+    posting — never safe to trust verbatim inside an HTML-parsed message."""
+    body = format_individual_message(
+        "R&D <Labs>",
+        "Engineer",
+        "Remote",
+        88,
+        "Great <fit> & ready",
+        ["C++ & Rust"],
+        "https://apply.example/1?a=1&b=2",
+    )
+    assert "<Labs>" not in body
+    assert "R&amp;D" in body
+    assert "&lt;Labs&gt;" in body
+    assert "&lt;fit&gt;" in body
+    # the URL itself must be escaped too, for safe use inside href="..."
+    assert "a=1&amp;b=2" in body
+
+
+def test_format_individual_message_score_emoji_tiers():
+    high = format_individual_message("A", "B", None, 85, "x", [], "https://x")
+    mid = format_individual_message("A", "B", None, 50, "x", [], "https://x")
+    low = format_individual_message("A", "B", None, 20, "x", [], "https://x")
+    assert "🟢" in high
+    assert "🟡" in mid
+    assert "🔴" in low
 
 
 # ── _friendly_source ──────────────────────────────────────────────────────────
@@ -204,73 +232,46 @@ def test_format_burst_message_singular_for_one_posting():
 def test_format_burst_message_includes_missing_qualifications_per_item():
     matches = [_match(company="Acme", missing=["Kubernetes", "GraphQL"])]
     body = format_burst_message(matches)
-    assert "missing: Kubernetes, GraphQL" in body
+    assert "Missing: Kubernetes, GraphQL" in body
 
 
 def test_format_burst_message_handles_empty_missing_list():
     matches = [_match(company="Acme", missing=[])]
     body = format_burst_message(matches)
-    assert "missing: none listed" in body
+    assert "Missing: none listed" in body
 
 
 def test_format_burst_message_includes_apply_link_per_item():
     matches = [_match(company="Stripe")]
     body = format_burst_message(matches)
-    assert "Apply: https://boards.greenhouse.io/stripe/jobs/123456" in body
+    assert 'href="https://boards.greenhouse.io/stripe/jobs/123456"' in body
 
 
 def test_format_burst_message_includes_source_when_given():
     matches = [_match(company="Stripe", source="jsearch:LinkedIn")]
     body = format_burst_message(matches)
-    assert "via LinkedIn" in body
+    assert "🔗LinkedIn" in body
 
 
 def test_format_burst_message_omits_source_when_empty():
     matches = [_match(company="Stripe", source="")]
     body = format_burst_message(matches)
-    assert "via" not in body
+    assert "🔗" not in body
 
 
 def test_format_burst_message_caps_at_ten_lines_with_overflow_note():
     matches = [_match(company=f"Company{i}", score=i) for i in range(15)]
     body = format_burst_message(matches)
     for i in range(1, 11):
-        assert f" {i}. " in body
+        assert f"<b>{i}. " in body
     assert "+ 5 more" in body
-    assert "db stats" in body
+    assert "<code>db stats</code>" in body
 
 
 def test_format_burst_message_no_overflow_note_when_under_cap():
     matches = [_match(company="A"), _match(company="B")]
     body = format_burst_message(matches)
     assert "more" not in body
-
-
-# ── format_digest ──────────────────────────────────────────────────────────────
-
-
-def test_format_digest_includes_stats():
-    body = format_digest("Sun May 10 3:00PM", 47, 6, _match(score=92), [])
-    assert "47 new postings" in body
-    assert "6 alerts sent" in body
-    assert "92/100" in body
-
-
-def test_format_digest_includes_unresolved_companies():
-    body = format_digest("Sun May 10 3:00PM", 47, 6, None, ["Acme Corp", "Widgets Inc"])
-    assert "Acme Corp" in body
-    assert "Widgets Inc" in body
-    assert "⚠" in body
-
-
-def test_format_digest_omits_unresolved_section_when_empty():
-    body = format_digest("Sun May 10 3:00PM", 47, 6, None, [])
-    assert "⚠" not in body
-
-
-def test_format_digest_omits_top_match_when_none():
-    body = format_digest("Sun May 10 3:00PM", 47, 6, None, [])
-    assert "Top match" not in body
 
 
 # ── send_message ──────────────────────────────────────────────────────────────
@@ -285,6 +286,20 @@ def test_send_message_success_returns_message_id():
     assert result.error is None
     _, kwargs = mock_post.call_args
     assert kwargs["json"] == {"chat_id": "12345", "text": "hello"}
+
+
+def test_send_message_omits_parse_mode_by_default():
+    with patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post:
+        send_message("bot-token", "12345", "hello")
+
+    assert "parse_mode" not in mock_post.call_args.kwargs["json"]
+
+
+def test_send_message_includes_parse_mode_when_given():
+    with patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post:
+        send_message("bot-token", "12345", "<b>hello</b>", parse_mode="HTML")
+
+    assert mock_post.call_args.kwargs["json"]["parse_mode"] == "HTML"
 
 
 def test_send_message_api_error_returns_error_not_raises():
@@ -382,6 +397,7 @@ def test_notify_matches_individual_mode_below_threshold():
     assert first_markup["inline_keyboard"][0][0]["callback_data"] == "applied:101"
     second_markup = mock_post.call_args_list[1].kwargs["json"]["reply_markup"]
     assert second_markup["inline_keyboard"][0][0]["callback_data"] == "applied:102"
+    assert mock_post.call_args_list[0].kwargs["json"]["parse_mode"] == "HTML"
 
 
 def test_notify_matches_burst_mode_at_or_above_threshold():
@@ -398,6 +414,7 @@ def test_notify_matches_burst_mode_at_or_above_threshold():
     body = mock_post.call_args.kwargs["json"]["text"]
     assert "5 new postings" in body
     assert "reply_markup" not in mock_post.call_args.kwargs["json"]
+    assert mock_post.call_args.kwargs["json"]["parse_mode"] == "HTML"
 
 
 def test_notify_matches_individual_mode_paces_sends():
@@ -495,13 +512,14 @@ def test_edit_message_mark_applied_sends_expected_payload():
     resp = MagicMock()
     resp.json.return_value = {"ok": True}
     with patch("src.notifier.httpx.post", return_value=resp) as mock_post:
-        edit_message_mark_applied("bot-token", "12345", "999", "[InternAgent] Stripe · SWE Intern")
+        edit_message_mark_applied("bot-token", "12345", "999", "<b>Stripe</b> — SWE Intern")
 
     payload = mock_post.call_args.kwargs["json"]
     assert payload["chat_id"] == "12345"
     assert payload["message_id"] == 999
-    assert payload["text"] == "[InternAgent] Stripe · SWE Intern\n\n✅ Applied"
+    assert payload["text"] == "<b>Stripe</b> — SWE Intern\n\n✅ Applied"
     assert payload["reply_markup"] == {"inline_keyboard": []}
+    assert payload["parse_mode"] == "HTML"
 
 
 def test_edit_message_mark_applied_never_raises_on_network_error():

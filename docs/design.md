@@ -160,8 +160,9 @@ Step 3: Web search "{company} careers internship site:careers.{company}.com"
    │  hit → store custom URL in DB, flag for custom scraper
    │  miss ↓
    ▼
-Step 4: Mark as "unresolved" in DB; include in hourly digest message
-        Re-attempted every hour (subject to a 1-hour per-company cooldown)
+Step 4: Mark as "unresolved" in DB; retried automatically every hour
+        (subject to a 1-hour per-company cooldown) — no message is pushed
+        about this, check `python -m src.db stats` for the current list
 ```
 
 ### 3.2 Bundled lookup table
@@ -185,9 +186,7 @@ Uses the SerpAPI or Google Custom Search API. Query: `"{company name}" internshi
 
 ### 3.4 Warning surfacing for unresolved companies
 
-Unresolved companies are surfaced in two ways:
-1. `python -m src.db stats` prints a section: `Unresolved companies (N): [list]`
-2. The hourly digest message includes: `⚠ Could not find career pages for: Acme Corp, Widgets Inc`
+Unresolved companies are surfaced via `python -m src.db stats`, which prints a section: `Unresolved companies (N): [list]`. There used to also be a hourly digest message repeating this list; it was removed (§9, §10.1) since it mostly duplicated `db stats` — unresolved companies are still retried automatically in the background, just without a pushed notification about it.
 
 ---
 
@@ -210,7 +209,7 @@ Indeed RSS, HN, and RemoteOK run the same keyword queries sequentially within th
 - **Provider**: JSearch on RapidAPI — the only source that reaches LinkedIn, Glassdoor, and ZipRecruiter postings, aggregated through a legitimate metered API rather than direct scraping (see the LinkedIn constraint, §3 of `requirements.md`)
 - **Endpoint**: `GET https://jsearch.p.rapidapi.com/search-v2` — **not** the more commonly documented `/search`, which 404s on this project's subscription; confirmed by live-testing against the real key, since RapidAPI's "JSearch" listings vary across publishers in which endpoints they actually expose. Results are nested under `data.jobs`, not `data` directly.
 - **Auth**: `X-RapidAPI-Key` / `X-RapidAPI-Host` headers; requires `JSEARCH_API_KEY`
-- **Query shape**: one broad query per poll, `country=us`, `employment_types=INTERN`, `date_posted=week` — deliberately not looped per domain keyword like Indeed RSS, since every request is metered. **Alternates between two queries by UTC hour** (`(hour // 4) % 2`): `INTERN_QUERY` (`"software engineering intern in the United States"`) on even 4-hour slots, `COOP_QUERY` (`"...co-op..."`) on odd ones — added after discovering the single intern-only query missed co-op-only listings that never say "intern". Each variant polls roughly every 8 hours.
+- **Query shape**: one broad query per poll, `country=us`, `employment_types=INTERN`, `date_posted=week` — deliberately not looped per domain keyword like Indeed RSS, since every request is metered. **Alternates between two queries by UTC hour** (`(hour // 4) % 2`): `INTERN_QUERY` (`"software engineering, AI, or data engineering intern in the United States"`) on even 4-hour slots, `COOP_QUERY` (`"...co-op..."`) on odd ones — added after discovering the single intern-only query missed co-op-only listings that never say "intern"; both variants were later broadened beyond pure "software engineering" wording to also catch AI/data-engineer-titled roles (§5.2). Each variant polls roughly every 8 hours.
 - **Cadence**: its own scheduled job, independent of the main cycle — currently every 4 hours (~180 requests/month total across both query variants), sized to fit a 200/month free-tier plan. Re-tune the interval (`queries_per_poll × polls_per_day × 30 ≤ plan quota`) if the plan differs — querying both variants every poll instead of alternating would double this to ~360/month.
 - **Source labeling**: each result includes `job_publisher` (e.g. `"LinkedIn"`, `"ZipRecruiter"`, `"BeBee"`) — the exact board it was aggregated from. Encoded into `source` as `jsearch:{publisher}`, the same compound-source convention `greenhouse.py`/`lever.py` use for company slugs, and surfaced to the user as the message's `Source:` line (§9.2)
 - **Apply link prefers the employer's own page over the aggregator's** (`_direct_apply_url()` in `jsearch.py`): `job_apply_link` is frequently a re-poster, not the employer — confirmed live, a captured response had `job_apply_link` pointing to BeBee with `job_apply_is_direct: false`. JSearch separately provides `apply_options`, a list of every known application route each with its own `is_direct` flag; the scraper uses the first direct one if any exists, and only falls back to the possibly-indirect `job_apply_link` if nothing in `apply_options` is marked direct either.
@@ -279,10 +278,10 @@ Designed in but never built — there is no `src/scrapers/wellfound.py`. `WELLFO
 
 ```
 Tier 1 — Direct company monitoring (companies.yaml)
-  └── Fastest alert (within one poll cycle of posting — default 60 min)
+  └── Fastest alert (within one poll cycle of posting — default 120 min)
   └── Best for: big tech, quant firms, companies that don't post broadly
   └── Source: Greenhouse / Lever ATS APIs, custom scrapers
-  └── Coverage: ~150 companies in your personal list
+  └── Coverage: ~600 companies in your personal list
 
 Tier 2 — Broad job board search (all other companies)
   └── Catches any company posting on any major platform
@@ -308,6 +307,9 @@ The same posting can appear in both tiers (e.g., a Stripe job found via Indeed R
 "machine learning intern"
 "AI intern"
 "artificial intelligence intern"
+"AI engineer intern"
+"data engineer intern"
+"machine learning research intern"
 "research intern computer science"
 "backend intern"
 "frontend intern"
@@ -318,7 +320,11 @@ The same posting can appear in both tiers (e.g., a Stripe job found via Indeed R
 "software co-op"
 "machine learning co-op"
 "data science co-op"
+"AI engineer co-op"
+"data engineer co-op"
 ```
+
+The `AI engineer`/`data engineer`/`machine learning research` variants were added after AI/data-titled roles (as opposed to pure "software engineering" wording) were found being missed by the original term list.
 
 The agent does not filter by semester or term — it catches summer, fall, spring, and co-op postings alike. Season filtering would require parsing unstructured job description text and is left to the AI scorer (which can flag term in its reasoning).
 
@@ -572,57 +578,53 @@ The notifier operates in one of two modes per polling cycle, depending on how ma
 **Individual mode** (< `BURST_THRESHOLD` postings, default 20): one message per posting, each including its score, reasoning, missing qualifications, source board, and an apply link — direct to the employer where the source makes that possible (Greenhouse, Lever, JSearch; see §4.1a), otherwise the source's own listing (Indeed, Adzuna) — plus a "Mark Applied" button. Individual sends are paced 1 second apart (`_INDIVIDUAL_SEND_DELAY_SECONDS`) to stay under Telegram's per-chat rate limit — a cycle with, say, 15 postings takes ~15 seconds to fully notify, not instant.
 
 ```
-[InternAgent] Stripe · Software Engineering Intern · Remote
-Source: Greenhouse
-Match: 88 — Strong Python/backend fit, welcoming undergrads
+Stripe — Software Engineering Intern
+📍 Remote  ·  🔗 Greenhouse
+
+🟢 88/100
+Strong Python/backend fit, welcoming undergrads
+
 Missing: Kubernetes
-Apply: https://boards.greenhouse.io/stripe/jobs/123456
+👉 Apply
 ```
 
 **Burst mode** (≥ `BURST_THRESHOLD` postings): a single summary message listing all of them, each with its score, source, missing qualifications, and its own apply link, capped at 10 lines shown (`+ N more — run db stats`) to stay within Telegram's message length limit on a genuinely high-volume cycle.
 
 ```
-[InternAgent] 25 new postings this cycle
- 1. Stripe · SWE Intern · Remote (92) via Greenhouse — missing: none listed
-    Apply: https://boards.greenhouse.io/stripe/jobs/123456
- 2. TikTok · SWE Intern · Seattle (78) via LinkedIn — missing: Kubernetes
-    Apply: https://www.linkedin.com/jobs/view/abc123
- + 23 more — run `db stats` to see all
+25 new postings this cycle
+🟢 1. Stripe — SWE Intern · 📍Remote · 🔗Greenhouse (92)
+    Missing: none listed · Apply
+🟡 2. TikTok — SWE Intern · 📍Seattle · 🔗LinkedIn (78)
+    Missing: Kubernetes · Apply
+
++ 23 more — run db stats to see all
 ```
 
 The full list is always stored in the database. `db stats` shows everything regardless of which mode was used. `BURST_THRESHOLD` is configurable via env var — the default (20) was chosen deliberately high so individual messages (with apply links) are the normal experience, and batching only kicks in as a safety net on unusually high-volume cycles, not as the default behavior.
 
 ### 9.2 Real-time message format (individual mode)
 
-```
-[InternAgent] Stripe · Software Engineering Intern · Remote
-Source: Greenhouse
-Match: 88 — Strong Python/backend fit, welcoming undergrads
-Missing: Kubernetes
-Apply: https://boards.greenhouse.io/stripe/jobs/123456
-```
+Sent as Telegram HTML (`parse_mode="HTML"`), not plain text — bold company/title header, a score-tier emoji (🟢 ≥70, 🟡 ≥40, 🔴 below — a visual triage cue only, not a filtering mechanism; the actual floor is `min_relevance_score`, §8.2a), and a clickable `Apply` link rather than a bare pasted URL. Every value substituted into the template (company, title, location, reasoning, missing qualifications) is run through `html.escape()` first, since all of it is either AI-generated or scraped from a third-party posting — never safe to trust verbatim inside HTML.
 
-The `Source:` line is derived from `JobPosting.source` via `_friendly_source()` in `notifier.py` — most sources map to a fixed label (`greenhouse:{slug}` → `"Greenhouse"`); `jsearch:{publisher}` is the one exception where the compound suffix *is* the label (`jsearch:LinkedIn` → `"LinkedIn"`), since that's the actual board the posting was aggregated from. The line is omitted entirely if `source` is empty (defensive default, not expected in practice).
+The `🔗` source label is derived from `JobPosting.source` via `_friendly_source()` in `notifier.py` — most sources map to a fixed label (`greenhouse:{slug}` → `"Greenhouse"`); `jsearch:{publisher}` is the one exception where the compound suffix *is* the label (`jsearch:LinkedIn` → `"LinkedIn"`), since that's the actual board the posting was aggregated from. It's omitted entirely if `source` is empty (defensive default, not expected in practice).
 
-Targets ≤4096 chars (Telegram's hard per-message limit — generous compared to SMS's per-segment cost, so truncation is a rare edge case rather than the norm). URL is always included verbatim; reasoning is truncated if needed to fit the budget, after accounting for the header, source line, and missing-qualifications/apply-url suffix.
+Targets ≤4096 chars (Telegram's hard per-message limit — generous compared to SMS's per-segment cost, so truncation is a rare edge case rather than the norm). The apply link is always included verbatim; reasoning (after escaping) is truncated if needed to fit the budget, after accounting for the header, meta line, and missing-qualifications/apply-link suffix.
 
-### 9.3 Digest message format
-
-```
-[InternAgent] Digest — Sun May 10 3:00PM
-In the last hour: 3 new postings, 1 alerts sent
-Top match: Stripe SWE Intern (92/100)
-⚠ Not found: Acme Corp, Widgets Inc
-```
-
-"New postings" and "alerts sent" are scoped to the last hour (matching the digest's own cadence) — not `db stats`' all-time totals. "Top match" still looks back 7 days, independent of digest cadence, since "best match in the last hour" would rarely have anything to show.
-
-### 9.4 Telegram delivery
+### 9.3 Telegram delivery
 
 - Plain `httpx` POST to `https://api.telegram.org/bot{token}/sendMessage` — no dedicated SDK needed for a single-endpoint integration this simple
+- `parse_mode="HTML"` is opt-in per call, not a default on `send_message()` — only the formatted individual/burst alerts use it (pre-escaped content); plain confirmation texts (`/pause`, `/resume`) have no need for it
 - Stores the returned `message_id`
 - On failure: retries once after 5 minutes; logs permanent failure
 - Chat ID redacted to last 4 characters in all logs (lower sensitivity than a phone number, but kept consistent with the project's log-hygiene practice)
+
+### 9.4 Mark Applied — visual confirmation
+
+Tapping "✅ Mark Applied" used to only produce a transient `answerCallbackQuery` toast, with no lasting trace once scrolled past. `get_latest_notification_for_posting()` (`db.py`) looks up the original alert's `telegram_message_id`, and `edit_message_mark_applied()` (`notifier.py`, Telegram's `editMessageText`) appends "✅ Applied" to that message and removes the button — `parse_mode="HTML"` must be passed here too, since the stored `original_text` is itself HTML (bold header, score emoji, Apply link), or Telegram renders the tags as literal text. Never raises — Telegram's "message is not modified" (e.g. a near-simultaneous double-tap racing the edit) is treated as a harmless no-op, same pattern as every other outbound Telegram call in this codebase.
+
+### 9.5 No separate digest/summary job
+
+There used to be an hourly digest message (stats, top match, unresolved companies) alongside the real-time alerts above. Removed per explicit request — it mostly repeated information already visible in the individual alerts themselves. Unresolved companies are still retried automatically in the background (§3.4, §10.1); check them via `python -m src.db stats`, not a pushed message.
 
 ---
 
@@ -634,11 +636,11 @@ Five independent `APScheduler` jobs, all `max_instances=1` to prevent overlappin
 
 | Job | Interval | Does |
 |---|---|---|
-| Main cycle | `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default 60) | Fetch (Indeed/HN/RemoteOK/Greenhouse/Lever), dedupe, score, notify |
-| Digest | `IntervalTrigger(hours=1)` | Retry unresolved companies, send summary message |
+| Main cycle | `IntervalTrigger(minutes=RUN_INTERVAL_MINUTES)` (default 120) | Fetch (Indeed/HN/RemoteOK/Greenhouse/Lever), dedupe, score, notify |
+| Unresolved-company retry | `IntervalTrigger(hours=1)` | Retry unresolved companies, silently — replaces the old digest job (§9.5); no message is sent |
 | Adzuna | `IntervalTrigger(weeks=1)` | Fetch, store unscored — separate from the main cycle to fit its free-tier quota |
 | JSearch | `IntervalTrigger(hours=4)` | Fetch (LinkedIn/Glassdoor/ZipRecruiter via one broad query), store unscored — separate for the same reason, sized to a 200/month plan |
-| Telegram command poll | `IntervalTrigger(minutes=2)` | `getUpdates` for `/pause`, `/resume`, and "Mark Applied" taps — deliberately frequent and decoupled from the hourly cycle so control feels responsive from the phone |
+| Telegram command poll | `IntervalTrigger(seconds=5)` | `getUpdates` for `/pause`, `/resume`, and "Mark Applied" taps — decoupled from the main cycle and deliberately fast (a few seconds, not minutes) so a button tap feels close to instant; `getUpdates` is a cheap short-poll (timeout=0) with no meaningful rate-limit risk at this interval |
 
 Postings Adzuna and JSearch store are picked up and scored by whichever main cycle run happens next — they don't score or notify themselves.
 
@@ -668,14 +670,11 @@ each main-cycle run:
   └── check if profile hash changed → trigger re-score pass on unnotified postings
   └── write run_log entry (JSON)
 
-every hour (digest job):
+every hour (unresolved-company retry job, §9.5):
   └── re-attempt discovery for unresolved companies (1-hour per-company cooldown)
-  └── compile last-hour stats (postings found, alerts sent)
-  └── fetch unresolved companies list
-  └── send digest message (unconditionally, if digest_enabled and not paused —
-      not gated on there being anything new to report)
+  └── no message sent — check `python -m src.db stats` for the current list
 
-every 2 minutes (telegram command poll):
+every 5 seconds (telegram command poll):
   └── getUpdates since last cursor
   └── callback_query "applied:{id}" → mark_applied, only from TELEGRAM_CHAT_ID
         → look up the posting's Notification row (get_latest_notification_

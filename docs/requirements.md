@@ -6,7 +6,7 @@
 
 | ID | Requirement |
 |---|---|
-| FR-01 | The system SHALL search using broad domain-level keyword queries — not exact job titles. Queries SHALL cover the domains: software engineering, data science, machine learning, and AI, and SHALL include co-op variants (e.g., `"software engineering co-op"`, `"data science co-op"`). The system SHALL NOT filter by internship term (summer/fall/spring/co-op) at the search layer — all terms are included and term context is surfaced by the AI scorer. |
+| FR-01 | The system SHALL search using broad domain-level keyword queries — not exact job titles. Queries SHALL cover the domains: software engineering, data science, machine learning, and AI — including title variants beyond pure "software engineering" wording (e.g., `"AI engineer intern"`, `"data engineer intern"`, `"machine learning research intern"`) — and SHALL include co-op variants for each (e.g., `"software engineering co-op"`, `"data science co-op"`, `"AI engineer co-op"`, `"data engineer co-op"`). The system SHALL NOT filter by internship term (summer/fall/spring/co-op) at the search layer — all terms are included and term context is surfaced by the AI scorer. |
 | FR-02 | The system SHALL poll the following Tier 2 sources, wired into the poll schedule: Indeed (via public RSS feeds), HackerNews "Who's Hiring", and RemoteOK on the main cycle; Adzuna on its own weekly job. For LinkedIn coverage specifically — not reachable via any free source — the system SHALL support JSearch (RapidAPI) as a metered aggregator, active when `JSEARCH_API_KEY` is configured, polled on its own job at a cadence sized to the configured plan's quota. Wellfound (AngelList), Y Combinator Work at a Startup, and Dice are **not currently implemented**: Wellfound has no scraper at all; YC and Dice scrapers exist in `src/scrapers/` but are not wired into any scheduled job. Planned for a later phase. None of these fetch-layer filters are software-scoped by themselves — RemoteOK matches on generic job-board tags (`intern`/`internship` only, after a fix that removed a bare `junior` tag match pulling in non-software roles), and HN matches the word "intern" anywhere in a hiring-thread comment. Domain relevance is enforced downstream by the AI scorer (FR-26, FR-29), not by these sources. |
 | FR-03 | The system SHALL also monitor individual company career pages directly, based on company names listed in `config/companies.yaml`. |
 | FR-04 | The system SHALL filter all results to United States locations (on-site, hybrid, or remote). |
@@ -21,7 +21,7 @@
 | FR-08 | The company discovery pipeline SHALL resolve company names to career pages by checking, in order: (1) a bundled lookup table of known companies, (2) a web search for the company's Greenhouse or Lever board, (3) a web search for the company's generic careers page. |
 | FR-09 | Resolved company → ATS mappings SHALL be cached in the database so that web search is only performed once per company. |
 | FR-10 | If a company cannot be resolved after all discovery steps, the system SHALL mark it as `unresolved` in the database and log a warning. It SHALL NOT send an error message for each individual unresolved company. |
-| FR-11 | Unresolved companies SHALL be surfaced to the user via: (a) the `python -m src.db stats` command, and (b) the hourly digest message (count + names). |
+| FR-11 | Unresolved companies SHALL be surfaced to the user via the `python -m src.db stats` command (count + names). (There used to also be an hourly digest message repeating this — removed per FR-32/FR-33, below.) |
 | FR-12 | The system SHALL re-attempt discovery for unresolved companies once per week in case the company has since added a public career page. |
 
 ### 1.3 Resume-Based Profile
@@ -36,7 +36,7 @@
 | FR-17 | Both resume PDFs and `profile.cache.json` SHALL be gitignored and never committed to the repository. |
 | FR-18 | The system SHALL detect when any file in `/resumes` has been added or modified (via SHA-256 hash comparison) and log a prominent warning prompting the user to run `--rebuild-profile`. |
 | FR-19 | Running `python -m src.main --rebuild-profile` SHALL re-extract and re-merge all resumes, overwrite `profile.cache.json`, and trigger re-scoring of all stored postings against the updated profile on the next run. |
-| FR-20 | `profile.yaml` SHALL contain only user preferences — target locations, excluded keywords, digest settings, posting freshness window. It SHALL NOT contain skills or experience. |
+| FR-20 | `profile.yaml` SHALL contain only user preferences — target locations, excluded keywords, posting freshness window. It SHALL NOT contain skills or experience. |
 
 ### 1.4 Deduplication
 
@@ -66,19 +66,19 @@
 | FR-30a | If the number of scored postings in a single polling cycle is below `BURST_THRESHOLD` (default: 20), the system SHALL send one individual message per posting, each containing a direct application link, paced to respect Telegram's per-chat rate limit. If at or above the threshold, it SHALL send a single batched summary message listing all postings ranked by score (each with its own application link), with a note to check `db stats` for details. |
 | FR-31a | Every individual and batched message SHALL contain a direct application URL per posting. |
 | FR-31 | Each individual message SHALL contain: company name, role title, location/remote status, match score, missing qualifications, the source board the posting was found on, and direct application URL. |
-| FR-32 | The system SHALL send a digest message on a configurable interval (default: every hour) containing: number of new postings found and alerts sent since the last digest, and names of unresolved companies. |
-| FR-33 | The digest message is in addition to real-time alerts, not a replacement. |
+| FR-32 | **Removed.** Previously: the system sent a digest message on a configurable interval (default: every hour) containing new-postings/alerts-sent counts and unresolved company names. Removed per explicit request — it mostly repeated information already visible in the individual real-time alerts (FR-30, FR-31). Unresolved companies are still retried hourly in the background (FR-12) and remain visible via `db stats` (FR-11). |
+| FR-33 | **Removed** along with FR-32 — there is no longer a digest message, so the "in addition to real-time alerts" distinction no longer applies. |
 | FR-34 | All sent notifications SHALL be logged with timestamp and Telegram message ID. |
 | FR-35a | The system SHALL exclude postings older than `profile.yaml → matching.max_posting_age_days` (default 7) from being stored, scored, or notified, based on `posted_at`. Postings with no reliable `posted_at` SHALL NOT be excluded on this basis. |
 | FR-36a | Every individual-mode alert SHALL include an inline "Mark Applied" button. Tapping it SHALL mark the posting as applied and permanently exclude it from all future notification, regardless of subsequent rescoring. |
-| FR-37a | The system SHALL support `/pause` and `/resume` Telegram commands that toggle a master notification switch, independent of `profile.yaml → matching.digest_enabled` and of Telegram's own per-chat mute. While paused, the fetch/dedupe/score pipeline SHALL continue running normally; matching postings SHALL remain unnotified until `/resume` is issued, at which point they SHALL be sent normally on the next cycle — no matches SHALL be silently dropped due to a pause. |
+| FR-37a | The system SHALL support `/pause` and `/resume` Telegram commands that toggle a master notification switch, independent of Telegram's own per-chat mute. While paused, the fetch/dedupe/score pipeline SHALL continue running normally; matching postings SHALL remain unnotified until `/resume` is issued, at which point they SHALL be sent normally on the next cycle — no matches SHALL be silently dropped due to a pause. |
 | FR-37b | Inbound Telegram commands and button taps SHALL only be honored if they originate from the configured `TELEGRAM_CHAT_ID`; updates from any other chat SHALL be silently ignored. |
 
 ### 1.7 Scheduling & CLI
 
 | ID | Requirement |
 |---|---|
-| FR-35 | The system SHALL poll all sources on a configurable interval (default: 60 minutes). |
+| FR-35 | The system SHALL poll all sources on a configurable interval (default: 120 minutes). |
 | FR-36 | `--run-once`: execute a single full cycle and exit. |
 | FR-37 | `--dry-run`: full pipeline without sending any notification. |
 | FR-38 | `--rebuild-profile`: re-extract profile from all resume PDFs and exit. |
@@ -96,7 +96,7 @@
 |---|---|
 | NFR-01 | A failure in one data source SHALL NOT prevent other sources from completing in the same run. |
 | NFR-02 | Failed API calls SHALL be retried up to 3 times with exponential back-off before marking the source as failed for that run. |
-| NFR-03 | If any source fails for 3 or more consecutive runs, the system SHALL include it in the next digest message. |
+| NFR-03 | **Not currently implemented.** Previously specified surfacing a source in the next digest message after 3+ consecutive failures; the digest message itself was removed (FR-32). Repeated source failures are currently only visible via application logs, not pushed to the user. |
 | NFR-04 | The system SHALL resume correctly after process restart without sending duplicate notifications. |
 
 ### 2.2 Performance

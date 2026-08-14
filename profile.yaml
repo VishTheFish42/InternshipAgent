@@ -13,6 +13,5 @@ matching:
   # RemoteOK's "junior" tag) pull in non-software roles that the scoring prompt
   # pushes to 0-5. Raise this only if off-domain noise creeps back in.
   min_relevance_score: 15
-  digest_enabled: true  # send a summary message every hour in addition to real-time alerts
   max_posting_age_days: 7  # skip postings older than this (by posted_at); postings with no
                            # reliable posted_at are kept

@@ -17,20 +17,17 @@ from typing import Any
 import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.company_discoverer import retry_unresolved, seed_companies
 from src.config import Settings, get_settings
 from src.db import (
     JobPosting,
-    Notification,
     get_bot_state,
     get_last_run_log,
     get_latest_notification_for_posting,
     get_unnotified_postings,
     get_unnotified_scored_postings,
-    get_unresolved_companies,
     get_unscored_postings,
     init_db,
     log_run,
@@ -48,7 +45,6 @@ from src.notifier import (
     answer_callback_query,
     edit_message_mark_applied,
     format_burst_message,
-    format_digest,
     format_individual_message,
     get_updates,
     notify_matches,
@@ -411,56 +407,23 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     return run_data
 
 
-def _get_top_match_this_week(session: Session) -> JobPosting | None:
-    cutoff = _now() - timedelta(days=7)
-    return session.execute(
-        select(JobPosting)
-        .where(JobPosting.found_at >= cutoff, JobPosting.match_score.is_not(None))
-        .order_by(JobPosting.match_score.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+def retry_unresolved_companies(session: Session, settings: Settings) -> None:
+    """Re-attempt discovery for unresolved companies, hourly, silently.
 
-
-def _get_period_stats(session: Session, since: datetime) -> tuple[int, int]:
-    """Postings found and alerts sent since `since` — used for the digest's
-    per-period counts, distinct from get_stats()'s all-time totals."""
-    postings_found = session.execute(
-        select(func.count()).select_from(JobPosting).where(JobPosting.found_at >= since)
-    ).scalar_one()
-    alerts_sent = session.execute(
-        select(func.count()).select_from(Notification).where(Notification.sent_at >= since)
-    ).scalar_one()
-    return postings_found, alerts_sent
-
-
-def run_digest(session: Session, settings: Settings) -> None:
-    """Re-attempt unresolved companies and send the periodic summary message."""
-    config = _load_yaml_config()
-    if not config.get("matching", {}).get("digest_enabled", True):
-        return
-
+    Replaces the old digest job — previously this also sent a periodic
+    Telegram summary (postings found, alerts sent, top match, unresolved
+    company names), but that message mostly repeated information already
+    visible in the individual alerts themselves and was removed per explicit
+    request. Unresolved companies are still visible via `python -m src.db
+    stats`; this just keeps retrying them in the background without pushing
+    a message about it.
+    """
     retry_result = retry_unresolved(session, settings.search_api_key, min_age_hours=1)
     _log.info(
-        "Digest re-attempt: %d attempted, %d resolved",
+        "Unresolved-company retry: %d attempted, %d resolved",
         retry_result.attempted,
         retry_result.resolved,
     )
-
-    postings_found, alerts_sent = _get_period_stats(session, _now() - timedelta(hours=1))
-    unresolved = [c.name_raw for c in get_unresolved_companies(session)]
-    top_posting = _get_top_match_this_week(session)
-    top_match = _to_match_info(top_posting) if top_posting else None
-
-    body = format_digest(
-        _now().strftime("%a %b %-d %I:%M%p"), postings_found, alerts_sent, top_match, unresolved
-    )
-
-    if (
-        settings.telegram_bot_token
-        and settings.telegram_chat_id
-        and not get_bot_state(session).notifications_paused
-    ):
-        send_message_with_retry(settings.telegram_bot_token, settings.telegram_chat_id, body)
 
 
 def run_adzuna_poll(session: Session, settings: Settings) -> None:
@@ -615,9 +578,9 @@ def main() -> None:
         with session_scope(engine) as session:
             run_cycle(session, settings, dry_run=args.dry_run)
 
-    def _scheduled_digest() -> None:
+    def _scheduled_company_retry() -> None:
         with session_scope(engine) as session:
-            run_digest(session, settings)
+            retry_unresolved_companies(session, settings)
 
     def _scheduled_adzuna() -> None:
         with session_scope(engine) as session:
@@ -636,12 +599,16 @@ def main() -> None:
         IntervalTrigger(minutes=settings.run_interval_minutes),
         max_instances=1,
     )
-    scheduler.add_job(_scheduled_digest, IntervalTrigger(hours=1), max_instances=1)
+    scheduler.add_job(_scheduled_company_retry, IntervalTrigger(hours=1), max_instances=1)
     scheduler.add_job(_scheduled_adzuna, IntervalTrigger(weeks=1), max_instances=1)
     scheduler.add_job(_scheduled_jsearch, IntervalTrigger(hours=4), max_instances=1)
-    # Polls Telegram for /pause, /resume, and "Mark Applied" taps — deliberately
-    # frequent and decoupled from the hourly cycle so control feels responsive.
-    scheduler.add_job(_scheduled_telegram_poll, IntervalTrigger(minutes=2), max_instances=1)
+    # Polls Telegram for /pause, /resume, and "Mark Applied" taps — decoupled
+    # from the hourly cycle and deliberately fast (a few seconds, not minutes)
+    # so a button tap feels close to instant rather than sitting unconfirmed
+    # for however long the next poll takes to roll around. getUpdates is a
+    # cheap short-poll (timeout=0) with no meaningful rate-limit risk at this
+    # interval.
+    scheduler.add_job(_scheduled_telegram_poll, IntervalTrigger(seconds=5), max_instances=1)
 
     def _shutdown(signum: int, _frame: FrameType | None) -> None:
         _log.info("Received signal %d — shutting down after current cycle", signum)

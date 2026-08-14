@@ -25,7 +25,6 @@ from src.db import (
 from src.main import (
     _dedupe_and_store,
     _fetch_all_postings,
-    _get_top_match_this_week,
     _load_company_names,
     _load_yaml_config,
     _notify_and_mark,
@@ -33,9 +32,9 @@ from src.main import (
     _to_match_info,
     _to_scoring_posting,
     process_telegram_updates,
+    retry_unresolved_companies,
     run_adzuna_poll,
     run_cycle,
-    run_digest,
     run_jsearch_poll,
 )
 from src.matcher import ScoredPosting, ScoringResult
@@ -380,7 +379,9 @@ def test_run_cycle_seeds_companies_from_config(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "companies.yaml").write_text(
         "companies:\n  - Stripe\n  - OpenAI\n", encoding="utf-8"
@@ -408,7 +409,9 @@ def test_run_cycle_skips_seeding_when_no_companies_configured(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
     fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
 
     with (
@@ -426,7 +429,9 @@ def test_run_cycle_dry_run_never_sends_notifications(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
     fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
@@ -448,7 +453,9 @@ def test_run_cycle_sends_alerts_for_matches_above_threshold(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
 
@@ -488,7 +495,9 @@ def test_run_cycle_holds_matches_when_notifications_paused(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
 
     with (
         session_scope(engine) as session,
@@ -528,7 +537,9 @@ def test_run_cycle_sends_alerts_for_weak_fit_postings_too(
     floor still gets notified, with its missing_qualifications carried
     through to the outbound message info."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
 
@@ -582,7 +593,9 @@ def test_run_cycle_holds_postings_below_min_relevance_score(
     e.g. a RemoteOK 'junior' role in an unrelated field) is scored and
     stored, but not notified."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 15\n", encoding="utf-8"
+    )
 
     source = MagicMock(return_value=[_raw_posting(external_id="1")])
 
@@ -626,7 +639,9 @@ def test_run_cycle_records_errors_from_failed_sources(
     engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n", encoding="utf-8"
+    )
 
     failing = MagicMock(side_effect=RuntimeError("API down"))
     fake_score = ScoringResult(scored=[], input_tokens=0, output_tokens=0, estimated_cost_usd=0.0)
@@ -642,79 +657,25 @@ def test_run_cycle_records_errors_from_failed_sources(
     assert "greenhouse" in summary["errors"][0]
 
 
-# ── _get_top_match_this_week ──────────────────────────────────────────────────
+# ── retry_unresolved_companies ────────────────────────────────────────────────
 
 
-def test_get_top_match_this_week_returns_highest_score(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        _stored_posting(session, external_id="1", match_score=60, found_at=_now())
-        _stored_posting(
-            session,
-            external_id="2",
-            apply_url="https://boards.greenhouse.io/stripe/jobs/2",
-            match_score=95,
-            found_at=_now(),
-        )
-
-    with session_scope(engine) as session:
-        top = _get_top_match_this_week(session)
-    assert top is not None
-    assert top.match_score == 95
-
-
-def test_get_top_match_this_week_none_when_empty(engine: Engine) -> None:
-    with session_scope(engine) as session:
-        assert _get_top_match_this_week(session) is None
-
-
-# ── run_digest ────────────────────────────────────────────────────────────────
-
-
-def test_run_digest_skipped_when_disabled(
-    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: false\n", encoding="utf-8")
-
-    with (
-        session_scope(engine) as session,
-        patch("src.main.retry_unresolved") as mock_retry,
-    ):
-        run_digest(session, _settings())
-
-    mock_retry.assert_not_called()
-
-
-def test_run_digest_sends_summary_message(
-    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
-
+def test_retry_unresolved_companies_calls_retry_unresolved(engine: Engine) -> None:
     with (
         session_scope(engine) as session,
         patch(
             "src.main.retry_unresolved",
             return_value=RetryResult(attempted=2, resolved=1, still_unresolved=1),
-        ),
-        patch("src.main.send_message_with_retry") as mock_send,
+        ) as mock_retry,
     ):
-        run_digest(session, _settings())
+        retry_unresolved_companies(session, _settings())
 
-    mock_send.assert_called_once()
-    body = mock_send.call_args.args[2]
-    assert "Digest" in body
+    mock_retry.assert_called_once()
 
 
-def test_run_digest_skips_send_when_notifications_paused(
-    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
-
-    with session_scope(engine) as session:
-        set_notifications_paused(session, True)
-
+def test_retry_unresolved_companies_sends_no_telegram_message(engine: Engine) -> None:
+    """The old digest sent a summary message; this replacement is silent —
+    only the retry itself happens, nothing is pushed to Telegram."""
     with (
         session_scope(engine) as session,
         patch(
@@ -723,7 +684,7 @@ def test_run_digest_skips_send_when_notifications_paused(
         ),
         patch("src.main.send_message_with_retry") as mock_send,
     ):
-        run_digest(session, _settings())
+        retry_unresolved_companies(session, _settings())
 
     mock_send.assert_not_called()
 
@@ -991,70 +952,3 @@ def test_process_telegram_updates_passes_offset_from_stored_cursor(engine: Engin
         process_telegram_updates(session, _settings())
 
     assert mock_get_updates.call_args.kwargs["offset"] == 701
-
-
-def test_run_digest_counts_only_recent_postings(
-    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The digest now runs hourly, so its 'new postings' count must be scoped
-    to postings found in the last hour, not get_stats()'s all-time total."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
-
-    with session_scope(engine) as session:
-        _stored_posting(
-            session,
-            external_id="old",
-            apply_url="https://boards.greenhouse.io/stripe/jobs/old",
-            found_at=_now() - timedelta(days=2),
-        )
-        _stored_posting(
-            session,
-            external_id="recent",
-            apply_url="https://boards.greenhouse.io/stripe/jobs/recent",
-            found_at=_now(),
-        )
-
-    with (
-        session_scope(engine) as session,
-        patch(
-            "src.main.retry_unresolved",
-            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
-        ),
-        patch("src.main.send_message_with_retry") as mock_send,
-    ):
-        run_digest(session, _settings())
-
-    body = mock_send.call_args.args[2]
-    assert "1 new postings" in body
-
-
-def test_run_digest_counts_alerts_by_when_sent_not_when_found(
-    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An alert for an old posting still counts toward this period's
-    alerts-sent total if it was actually sent within the window."""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "profile.yaml").write_text("matching:\n  digest_enabled: true\n", encoding="utf-8")
-
-    with session_scope(engine) as session:
-        old = _stored_posting(
-            session,
-            external_id="old",
-            apply_url="https://boards.greenhouse.io/stripe/jobs/old",
-            found_at=_now() - timedelta(days=2),
-        )
-        mark_notified(session, old.id, "123", "old alert")
-
-    with (
-        session_scope(engine) as session,
-        patch(
-            "src.main.retry_unresolved",
-            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
-        ),
-        patch("src.main.send_message_with_retry") as mock_send,
-    ):
-        run_digest(session, _settings())
-
-    body = mock_send.call_args.args[2]
-    assert "1 alerts sent" in body

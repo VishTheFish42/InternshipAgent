@@ -29,8 +29,8 @@ _HOST = "jsearch.p.rapidapi.com"
 # Two query variants, alternated per poll by the caller (main.py) rather than
 # both queried every poll — a second query every 4 hours would double the
 # ~180/month request volume to ~360/month, over a 200/month free-tier quota.
-INTERN_QUERY = "software engineering intern in the United States"
-COOP_QUERY = "software engineering co-op in the United States"
+INTERN_QUERY = "software engineering, AI, or data engineering intern in the United States"
+COOP_QUERY = "software engineering, AI, or data engineering co-op in the United States"
 
 
 def _direct_apply_url(result: dict[str, Any]) -> str:

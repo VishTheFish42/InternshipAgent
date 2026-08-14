@@ -28,6 +28,9 @@ _CORE_TERMS = [
     "machine learning intern",
     "AI intern",
     "artificial intelligence intern",
+    "AI engineer intern",
+    "data engineer intern",
+    "machine learning research intern",
     "research intern computer science",
     "backend intern",
     "frontend intern",
@@ -40,6 +43,8 @@ _COOP_TERMS = [
     "software co-op",
     "machine learning co-op",
     "data science co-op",
+    "AI engineer co-op",
+    "data engineer co-op",
 ]
 
 

@@ -81,7 +81,7 @@ python -m src.db init
 # 9. Run once to verify everything works
 python -m src.main --run-once --dry-run
 
-# 10. Start the scheduler (runs every 60 minutes)
+# 10. Start the scheduler (runs every 2 hours)
 python -m src.main
 ```
 
@@ -132,11 +132,12 @@ preferences:
 
 matching:
   min_relevance_score: 15  # domain-relevance floor, NOT a "good fit" bar — see below
-  digest_enabled: true # send a summary message every hour in addition to real-time alerts
   max_posting_age_days: 7  # skip postings older than this (by posted_at); no reliable posted_at → kept
 ```
 
-**No fit-quality gate, but a small domain-relevance floor:** every genuine software/AI/data posting gets a Telegram message with its score, the AI's reasoning, and any `missing_qualifications` — a 15/100 weak-fit posting and a 95/100 strong-fit posting both get a message, so you decide what's worth applying to rather than the agent silently dropping anything it scores as a weak personal fit. `min_relevance_score` (default 15) exists for a different reason: some sources aren't software-scoped at the fetch layer (e.g. RemoteOK tags a `"junior"` role in marketing or design the same as a junior *software* role), so the scoring prompt has a hard rule to push anything outside SWE/DS/ML/AI to a 0-5 score, and this floor cuts those out. It's a "is this even the right field" gate, not a "would I apply to this" gate — raise it only if off-domain postings are still getting through. This trades message volume for completeness — if it gets noisy, `BURST_THRESHOLD` (see below) automatically switches a busy cycle to one batched digest message instead of one-per-posting.
+**No fit-quality gate, but a small domain-relevance floor:** every genuine software/AI/data posting gets a Telegram message with its score, the AI's reasoning, and any `missing_qualifications` — a 15/100 weak-fit posting and a 95/100 strong-fit posting both get a message, so you decide what's worth applying to rather than the agent silently dropping anything it scores as a weak personal fit. `min_relevance_score` (default 15) exists for a different reason: some sources aren't software-scoped at the fetch layer (e.g. RemoteOK tags a `"junior"` role in marketing or design the same as a junior *software* role), so the scoring prompt has a hard rule to push anything outside SWE/DS/ML/AI to a 0-5 score, and this floor cuts those out. It's a "is this even the right field" gate, not a "would I apply to this" gate — raise it only if off-domain postings are still getting through. This trades message volume for completeness — if it gets noisy, `BURST_THRESHOLD` (see below) automatically switches a busy cycle to one batched summary message instead of one-per-posting.
+
+**No separate digest/summary job** — there used to be one, sending an hourly recap that mostly repeated what the individual alerts already said. Removed per explicit request. Unresolved companies are still retried hourly in the background; check them via `python -m src.db stats`, not a pushed message.
 
 ## Marking postings as applied, and pausing notifications
 
@@ -156,7 +157,7 @@ companies:
   - Figma
 ```
 
-No URLs, slugs, or ATS knowledge required. The agent discovers each company's career page automatically. A starter list of ~150 companies across big tech, AI, fintech, quant, SaaS, hardware, and defense is pre-populated in your local `companies.yaml`. Add or remove names freely.
+No URLs, slugs, or ATS knowledge required. The agent discovers each company's career page automatically. A starter list of ~600 companies across big tech, AI, fintech, quant, SaaS, hardware, and defense is pre-populated in your local `companies.yaml`. Add or remove names freely.
 
 `config/companies.example.yaml` is the committed placeholder — it shows the format but contains no real targets.
 
@@ -176,7 +177,7 @@ python -m src.db stats
 # Shows: postings found/scored/alerted, unresolved companies (by name), estimated API cost
 ```
 
-Unresolved companies are also included in your hourly digest message.
+Unresolved companies are retried automatically once an hour in the background — check `python -m src.db stats` to see what's still unresolved.
 
 ## How the agent covers companies you haven't listed
 
@@ -184,7 +185,7 @@ You don't need to list every company. The agent uses a **two-tier strategy**:
 
 | Tier | Sources | What it covers | Speed |
 |---|---|---|---|
-| **Tier 1** — Direct monitoring | Greenhouse · Lever · Custom scrapers | ~150 companies in your `companies.yaml`, checked at their career page directly | Fast: within one poll cycle |
+| **Tier 1** — Direct monitoring | Greenhouse · Lever · Custom scrapers | ~600 companies in your `companies.yaml`, checked at their career page directly | Fast: within one poll cycle |
 | **Tier 2** — Broad search | Indeed RSS · Adzuna · HackerNews · RemoteOK · JSearch | Every company posting on Indeed, RemoteOK, HN's monthly hiring thread, or — via JSearch — LinkedIn, Glassdoor, and ZipRecruiter | Slightly slower: depends on board indexing |
 
 **LinkedIn coverage:** direct LinkedIn scraping isn't done — LinkedIn actively blocks it and prohibits it in their Terms of Service. **JSearch** (RapidAPI) is the only source that reaches LinkedIn postings, via a legitimate metered API rather than scraping. It requires a `JSEARCH_API_KEY` (see Environment variables below) and polls on its own job every 4 hours (~180 requests/month, sized for a 200/month free-tier plan — adjust `IntervalTrigger(hours=4)` in `main.py` if your plan's quota differs). Without a key set, this source is silently skipped — everything else still runs.
@@ -213,13 +214,13 @@ See `.env.example` for all required variables. Key ones:
 | `JSEARCH_API_KEY` | RapidAPI JSearch key — the only source that reaches LinkedIn postings |
 | `SEARCH_API_KEY` | SerpAPI key — used only for company ATS discovery, not job searching |
 | `DATABASE_URL` | SQLite path or Postgres URL |
-| `RUN_INTERVAL_MINUTES` | How often to poll (default: `60`) |
+| `RUN_INTERVAL_MINUTES` | How often to poll (default: `120`) |
 | `BURST_THRESHOLD` | Min postings in one cycle to trigger a batched message instead of individual ones (default: `20`) |
 
 ## CLI reference
 
 ```bash
-python -m src.main                      # start scheduler (runs every 60 min)
+python -m src.main                      # start scheduler (runs every 2 hours)
 python -m src.main --run-once           # single run, then exit
 python -m src.main --dry-run            # full pipeline but no message sent
 python -m src.main --rebuild-profile    # re-extract profile from /resumes PDFs
@@ -255,7 +256,7 @@ InternshipAgent/
 ├── resumes/                      # gitignored — add your PDFs here
 │   └── your-resume.pdf
 ├── config/
-│   ├── companies.yaml            # gitignored — your private target list (~150 companies)
+│   ├── companies.yaml            # gitignored — your private target list (~600 companies)
 │   └── companies.example.yaml    # committed — format reference only
 ├── docs/
 │   ├── requirements.md
