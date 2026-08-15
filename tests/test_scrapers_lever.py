@@ -180,12 +180,48 @@ def test_fetch_for_resolved_companies_skips_source_on_http_error(session):
     def fake_fetch(slug: str) -> list:
         if slug == "linear":
             raise httpx.HTTPError("boom")
-        return []
+        return ["notionhq-posting"]  # type: ignore[list-item]
 
     with (
-        patch("src.scrapers.lever.fetch", side_effect=fake_fetch),
+        patch("src.scrapers.lever.fetch", side_effect=fake_fetch) as mock_fetch,
         patch("src.scrapers.lever.time.sleep"),
     ):
         postings = fetch_for_resolved_companies(session)
 
-    assert postings == []
+    # notionhq must still be fetched despite linear's failure — a bad company
+    # earlier in the list must not abort the rest.
+    mock_fetch.assert_any_call("linear")
+    mock_fetch.assert_any_call("notionhq")
+    assert len(postings) == 1
+
+
+def test_fetch_for_resolved_companies_continues_past_exhausted_retry(session):
+    """The real failure mode: fetch()'s underlying @retry wraps a repeated
+    httpx.HTTPError in tenacity.RetryError once stop_after_attempt(3) is
+    exhausted, not the original HTTPError — so RetryError, not just
+    HTTPError, must be caught per-company or one stale/incorrect cached ATS
+    slug silently aborts every remaining company in this loop for the whole
+    cycle (found via a live --run-once against a ~350-company list)."""
+    from tenacity import RetryError
+
+    session.add_all(
+        [
+            CompanyLookup(name_raw="Linear", ats_type="lever", slug="linear", status="resolved"),
+            CompanyLookup(name_raw="Notion", ats_type="lever", slug="notionhq", status="resolved"),
+        ]
+    )
+    session.commit()
+
+    def fake_fetch(slug: str) -> list:
+        if slug == "linear":
+            raise RetryError(last_attempt=None)  # type: ignore[arg-type]
+        return ["notionhq-posting"]  # type: ignore[list-item]
+
+    with (
+        patch("src.scrapers.lever.fetch", side_effect=fake_fetch) as mock_fetch,
+        patch("src.scrapers.lever.time.sleep"),
+    ):
+        postings = fetch_for_resolved_companies(session)
+
+    mock_fetch.assert_any_call("notionhq")
+    assert len(postings) == 1

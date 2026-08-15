@@ -8,7 +8,13 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    RetryError,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from src.db import CompanyLookup
 from src.scrapers.base import RawPosting
@@ -95,6 +101,11 @@ def fetch_for_resolved_companies(session: Session) -> list[RawPosting]:
             time.sleep(_RATE_LIMIT_SECONDS)
         try:
             postings.extend(fetch(slug))
-        except httpx.HTTPError:
+        except (httpx.HTTPError, RetryError):
+            # RetryError is what fetch()'s underlying @retry actually raises
+            # once stop_after_attempt(3) is exhausted — it wraps the underlying
+            # httpx.HTTPError rather than re-raising it, so both must be caught
+            # here or one bad slug (e.g. a stale/incorrect cached ATS mapping)
+            # aborts every remaining company in this loop for the whole cycle.
             continue
     return postings

@@ -183,12 +183,52 @@ def test_fetch_for_resolved_companies_skips_source_on_http_error(session):
     def fake_fetch(slug: str) -> list:
         if slug == "stripe":
             raise httpx.HTTPError("boom")
-        return []
+        return ["airbnb-posting"]  # type: ignore[list-item]
 
     with (
-        patch("src.scrapers.greenhouse.fetch", side_effect=fake_fetch),
+        patch("src.scrapers.greenhouse.fetch", side_effect=fake_fetch) as mock_fetch,
         patch("src.scrapers.greenhouse.time.sleep"),
     ):
         postings = fetch_for_resolved_companies(session)
 
-    assert postings == []
+    # airbnb must still be fetched (and its posting returned) despite stripe's
+    # failure — a bad company earlier in the list must not abort the rest.
+    mock_fetch.assert_any_call("stripe")
+    mock_fetch.assert_any_call("airbnb")
+    assert len(postings) == 1
+
+
+def test_fetch_for_resolved_companies_continues_past_exhausted_retry(session):
+    """The real failure mode: _fetch_jobs_for_slug's @retry wraps a repeated
+    httpx.HTTPError in tenacity.RetryError once stop_after_attempt(3) is
+    exhausted, not the original HTTPError — so RetryError, not just
+    HTTPError, must be caught per-company or one stale/incorrect cached ATS
+    slug silently aborts every remaining company in this loop for the whole
+    cycle (found via a live --run-once against a ~350-company list)."""
+    from tenacity import RetryError
+
+    session.add_all(
+        [
+            CompanyLookup(
+                name_raw="Stripe", ats_type="greenhouse", slug="stripe", status="resolved"
+            ),
+            CompanyLookup(
+                name_raw="Airbnb", ats_type="greenhouse", slug="airbnb", status="resolved"
+            ),
+        ]
+    )
+    session.commit()
+
+    def fake_fetch(slug: str) -> list:
+        if slug == "stripe":
+            raise RetryError(last_attempt=None)  # type: ignore[arg-type]
+        return ["airbnb-posting"]  # type: ignore[list-item]
+
+    with (
+        patch("src.scrapers.greenhouse.fetch", side_effect=fake_fetch) as mock_fetch,
+        patch("src.scrapers.greenhouse.time.sleep"),
+    ):
+        postings = fetch_for_resolved_companies(session)
+
+    mock_fetch.assert_any_call("airbnb")
+    assert len(postings) == 1
