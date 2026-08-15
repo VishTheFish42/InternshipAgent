@@ -79,6 +79,20 @@ def test_init_db_idempotent() -> None:
     assert eng is not None
 
 
+def test_init_db_enables_wal_and_busy_timeout_for_a_real_sqlite_file(tmp_path) -> None:
+    """A file-backed SQLite DB (unlike :memory:, which silently ignores WAL)
+    must actually get WAL journal mode and a generous busy_timeout — without
+    both, concurrent APScheduler jobs sharing a mounted-volume SQLite file
+    raise 'database is locked' instead of waiting (found live in production:
+    every main-cycle run failed for ~24 hours after independent jobs on
+    interval multiples landed on the same tick)."""
+    db_path = tmp_path / "test.db"
+    engine = init_db(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
+        assert conn.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
+
+
 # ── session_scope ─────────────────────────────────────────────────────────────
 
 

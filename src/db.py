@@ -138,7 +138,26 @@ class BotState(Base):
 
 def init_db(database_url: str) -> Engine:
     """Create all tables (no-op if they already exist) and return the engine."""
-    engine = create_engine(database_url)
+    connect_args: dict[str, Any] = {}
+    is_sqlite = database_url.startswith("sqlite")
+    if is_sqlite:
+        # SQLite allows only one writer at a time, and session_scope() commits
+        # once at the end of an entire job run — so a long-running job (e.g.
+        # company discovery working through a large companies.yaml) holds its
+        # write lock for the whole cycle. Without a generous busy_timeout, any
+        # other scheduled job that also writes during that window fails
+        # immediately with "database is locked" instead of waiting. Found
+        # after independent APScheduler jobs on interval multiples (1h/2h/4h)
+        # landed on the same wall-clock tick and every main-cycle run started
+        # failing (silently killing notifications) for ~24 hours before this
+        # was root-caused.
+        connect_args["timeout"] = 30
+    engine = create_engine(database_url, connect_args=connect_args)
+    if is_sqlite:
+        with engine.connect() as conn:
+            # WAL lets readers proceed without blocking on an in-progress
+            # writer, reducing contention beyond what busy_timeout alone fixes.
+            conn.exec_driver_sql("PRAGMA journal_mode=WAL")
     Base.metadata.create_all(engine)
     return engine
 
