@@ -85,6 +85,58 @@ def test_to_raw_posting_prefers_direct_apply_option_over_job_apply_link():
     assert posting.apply_url == "https://stripe.com/jobs/abc123"
 
 
+def test_to_raw_posting_skips_bebee_even_when_marked_direct():
+    """The real bug reported live: JSearch's own is_direct flag has been
+    observed marking BeBee/JobLeads (job-board re-posters, not the employer)
+    as direct — job_apply_is_direct itself can be true while job_apply_link
+    points straight at bebee.com. Must fall through to a genuinely better
+    candidate rather than trusting the flag for these domains."""
+    result = dict(_FAKE_RESULT)
+    result["job_apply_is_direct"] = True
+    result["job_apply_link"] = "https://bebee.com/us/jobs/abc123"
+    result["apply_options"] = [
+        {"apply_link": "https://bebee.com/us/jobs/abc123", "is_direct": True, "publisher": "BeBee"},
+        {
+            "apply_link": "https://www.linkedin.com/jobs/view/abc123",
+            "is_direct": False,
+            "publisher": "LinkedIn",
+        },
+    ]
+    posting = _to_raw_posting(result)
+    assert posting.apply_url == "https://www.linkedin.com/jobs/view/abc123"
+
+
+def test_to_raw_posting_skips_jobleads_even_when_marked_direct():
+    result = dict(_FAKE_RESULT)
+    result["job_apply_is_direct"] = True
+    result["job_apply_link"] = "https://www.jobleads.com/us/jobs/abc123"
+    result["apply_options"] = [
+        {
+            "apply_link": "https://www.jobleads.com/us/jobs/abc123",
+            "is_direct": True,
+            "publisher": "JobLeads",
+        },
+        {
+            "apply_link": "https://www.linkedin.com/jobs/view/abc123",
+            "is_direct": False,
+            "publisher": "LinkedIn",
+        },
+    ]
+    posting = _to_raw_posting(result)
+    assert posting.apply_url == "https://www.linkedin.com/jobs/view/abc123"
+
+
+def test_to_raw_posting_falls_back_to_bebee_if_nothing_else_available():
+    """Never leave a posting with no apply link at all — a blocked-domain
+    link is still better than none if it's genuinely the only option."""
+    result = dict(_FAKE_RESULT)
+    result["job_apply_is_direct"] = True
+    result["job_apply_link"] = "https://bebee.com/us/jobs/abc123"
+    result["apply_options"] = []
+    posting = _to_raw_posting(result)
+    assert posting.apply_url == "https://bebee.com/us/jobs/abc123"
+
+
 def test_to_raw_posting_encodes_publisher_into_source():
     posting = _to_raw_posting(_FAKE_RESULT_REMOTE_NO_LOCATION)
     assert posting.source == "jsearch:ZipRecruiter"

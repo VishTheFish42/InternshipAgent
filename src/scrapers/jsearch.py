@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +26,18 @@ from src.scrapers.base import RawPosting
 
 _SEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
 _HOST = "jsearch.p.rapidapi.com"
+
+# Job-board re-posters, not employers — confirmed live: JSearch marks these
+# is_direct: true even though the link goes to the aggregator's own listing
+# page, not the company's application system. Excluded regardless of what
+# is_direct says, per explicit user request after seeing them show up as the
+# "Apply" link.
+_BLOCKED_APPLY_DOMAINS = {"bebee.com", "jobleads.com"}
+
+
+def _is_blocked_domain(url: str) -> bool:
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return any(host == d or host.endswith(f".{d}") for d in _BLOCKED_APPLY_DOMAINS)
 
 # Two query variants, alternated per poll by the caller (main.py) rather than
 # both queried every poll — a second query every 4 hours would double the
@@ -35,21 +48,47 @@ COOP_QUERY = "software engineering, AI, or data engineering co-op in the United 
 
 def _direct_apply_url(result: dict[str, Any]) -> str:
     """Prefer the employer's own application page over the aggregator's
-    (LinkedIn/BeBee/etc.) re-listing. JSearch's job_apply_link is often a
-    re-poster, not the source — confirmed in a live test where job_apply_link
-    pointed to BeBee with job_apply_is_direct: false. apply_options carries
-    every known application route with an is_direct flag per option; use the
-    first direct one if any exists, otherwise fall back to job_apply_link."""
+    (LinkedIn/BeBee/JobLeads/etc.) re-listing. JSearch's job_apply_link is
+    often a re-poster, not the employer — confirmed in a live test where
+    job_apply_link pointed to BeBee with job_apply_is_direct: false.
+    apply_options carries every known application route with an is_direct
+    flag per option; use the first direct one if any exists, otherwise fall
+    back to job_apply_link.
+
+    _BLOCKED_APPLY_DOMAINS (BeBee, JobLeads) are excluded at every step
+    regardless of is_direct — JSearch's own flag has been observed marking
+    them direct even though they're just another re-poster, not the
+    employer. The full priority chain is built first and then filtered,
+    so a blocked domain never displaces a genuinely better candidate
+    further down the list; only if literally nothing else is available
+    does a blocked link get returned, rather than leaving the posting
+    with no apply link at all."""
+    candidates: list[str] = []
+
     if result.get("job_apply_is_direct"):
         link = result.get("job_apply_link")
         if link:
-            return str(link)
+            candidates.append(str(link))
 
-    for option in result.get("apply_options") or []:
+    apply_options = result.get("apply_options") or []
+    for option in apply_options:
         if option.get("is_direct") and option.get("apply_link"):
-            return str(option["apply_link"])
+            candidates.append(str(option["apply_link"]))
 
-    return str(result.get("job_apply_link") or "")
+    fallback = result.get("job_apply_link")
+    if fallback:
+        candidates.append(str(fallback))
+
+    for option in apply_options:
+        link = option.get("apply_link")
+        if link:
+            candidates.append(str(link))
+
+    for candidate in candidates:
+        if not _is_blocked_domain(candidate):
+            return candidate
+
+    return candidates[0] if candidates else ""
 
 
 def _to_raw_posting(result: dict[str, Any]) -> RawPosting:
