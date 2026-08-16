@@ -118,9 +118,21 @@ def _fetch_all_postings(session: Session) -> tuple[list[RawPosting], list[str], 
 
 def _is_fresh(posted_at: datetime | None, max_age_days: int) -> bool:
     """True if within the freshness window, or if posted_at is unreliable/absent
-    for this source (benefit of the doubt rather than silently dropping it)."""
+    for this source (benefit of the doubt rather than silently dropping it).
+
+    Most scrapers build posted_at via datetime.fromisoformat(...+00:00), which
+    is timezone-aware; only lever.py and indeed_rss.py normalize it to naive
+    UTC themselves. _now() is always naive, so comparing directly raised
+    TypeError: can't compare offset-naive and offset-aware datetimes whenever
+    any posting from one of the other 7 sources had a real posted_at — which
+    aborted the entire cycle (fetch/dedupe/score/notify, all of it) before a
+    single alert could be sent. Normalizing here, at the one place the
+    comparison happens, fixes it for every source at once rather than
+    special-casing each scraper's own datetime construction."""
     if posted_at is None:
         return True
+    if posted_at.tzinfo is not None:
+        posted_at = posted_at.astimezone(UTC).replace(tzinfo=None)
     return posted_at >= _now() - timedelta(days=max_age_days)
 
 

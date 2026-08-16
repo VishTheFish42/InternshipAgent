@@ -220,6 +220,26 @@ def test_dedupe_and_store_boundary_posting_just_inside_max_age_is_kept(engine: E
     assert new_count == 1
 
 
+def test_dedupe_and_store_handles_timezone_aware_posted_at(engine: Engine) -> None:
+    """Most scrapers (greenhouse, remoteok, hn, adzuna, jsearch, yc, dice)
+    build posted_at via datetime.fromisoformat(...+00:00), which is
+    timezone-aware — only lever.py and indeed_rss.py normalize it to naive
+    UTC themselves. A tz-aware posted_at here must not raise TypeError
+    (found live in production: this crashed _dedupe_and_store, aborting the
+    entire cycle — fetch/dedupe/score/notify, all of it — before a single
+    alert could be sent, for any cycle where one of those 7 sources returned
+    a posting with a real date)."""
+    aware_fresh = (_now() - timedelta(days=1)).replace(tzinfo=UTC)
+    aware_stale = (_now() - timedelta(days=30)).replace(tzinfo=UTC)
+    postings = [
+        _raw_posting(external_id="tz-fresh", posted_at=aware_fresh),
+        _raw_posting(external_id="tz-stale", posted_at=aware_stale),
+    ]
+    with session_scope(engine) as session:
+        new_count = _dedupe_and_store(session, postings, 7)
+    assert new_count == 1
+
+
 # ── _to_scoring_posting ───────────────────────────────────────────────────────
 
 
