@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -29,6 +30,7 @@ from src.main import (
     _load_yaml_config,
     _notify_and_mark,
     _score_and_record,
+    _SecretRedactingFilter,
     _to_match_info,
     _to_scoring_posting,
     process_telegram_updates,
@@ -972,3 +974,44 @@ def test_process_telegram_updates_passes_offset_from_stored_cursor(engine: Engin
         process_telegram_updates(session, _settings())
 
     assert mock_get_updates.call_args.kwargs["offset"] == 701
+
+
+# ── _SecretRedactingFilter ───────────────────────────────────────────────────
+
+
+def _record(url: str) -> logging.LogRecord:
+    """A LogRecord shaped like httpx's own request-completion log call
+    (httpx._client, 'HTTP Request: %s %s "%s %d %s"'), which is what actually
+    puts the raw URL — including any embedded credentials — into args."""
+    return logging.LogRecord(
+        "httpx", logging.INFO, __file__, 1,
+        'HTTP Request: %s %s "%s %d %s"',
+        ("GET", url, "HTTP/1.1", 200, "OK"),
+        None,
+    )
+
+
+def test_secret_redacting_filter_masks_serpapi_key_in_query_string() -> None:
+    record = _record(
+        "https://serpapi.com/search?engine=google&q=%22Stripe%22&api_key=SECRET123&num=5"
+    )
+    _SecretRedactingFilter().filter(record)
+    message = record.getMessage()
+    assert "SECRET123" not in message
+    assert "api_key=***" in message
+
+
+def test_secret_redacting_filter_masks_telegram_bot_token_in_path() -> None:
+    record = _record(
+        "https://api.telegram.org/bot8941137659:AAGxCiKRF17VncNKhknsqYiWMyW5beDouj0/getUpdates"
+    )
+    _SecretRedactingFilter().filter(record)
+    message = record.getMessage()
+    assert "AAGxCiKRF17VncNKhknsqYiWMyW5beDouj0" not in message
+    assert "/bot***/getUpdates" in message
+
+
+def test_secret_redacting_filter_leaves_non_secret_urls_unchanged() -> None:
+    record = _record("https://remoteok.com/api")
+    _SecretRedactingFilter().filter(record)
+    assert "https://remoteok.com/api" in record.getMessage()

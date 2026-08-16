@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import logging
+import re
 import signal
 import sys
 from collections.abc import Callable
@@ -534,6 +535,30 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+class _SecretRedactingFilter(logging.Filter):
+    """httpx logs every request at INFO level with the full URL, including
+    query-string credentials (SerpAPI's api_key=...) and path-embedded ones
+    (Telegram's /bot<token>:.../...) — unlike the app's own chat-ID redaction
+    in notifier.py, which only covers messages it logs itself, this is the
+    third-party library logging the raw request URL verbatim on every single
+    call. Redacts by fully rendering the message (record.getMessage() applies
+    %-style args, which is where httpx puts the URL) and clearing args so the
+    redacted text isn't re-interpolated."""
+
+    _PATTERNS = [
+        (re.compile(r"(api_key=)[^&\s\"]+"), r"\1***"),
+        (re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+"), r"\1***"),
+    ]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for pattern, repl in self._PATTERNS:
+            msg = pattern.sub(repl, msg)
+        record.msg = msg
+        record.args = ()
+        return True
+
+
 def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -542,6 +567,7 @@ def _configure_logging() -> None:
             '"logger": "%(name)s", "message": "%(message)s"}'
         ),
     )
+    logging.getLogger("httpx").addFilter(_SecretRedactingFilter())
 
 
 def main() -> None:
