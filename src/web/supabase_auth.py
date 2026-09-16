@@ -42,7 +42,10 @@ def _extract_error_message(response: httpx.Response) -> str:
     except ValueError:
         return f"Auth request failed ({response.status_code})"
     return str(
-        body.get("msg") or body.get("error_description") or body.get("error") or body.get("message")
+        body.get("msg")
+        or body.get("error_description")
+        or body.get("error")
+        or body.get("message")
         or f"Auth request failed ({response.status_code})"
     )
 

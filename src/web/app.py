@@ -143,9 +143,7 @@ def signout(
 
 
 @app.get("/dashboard")
-def dashboard(
-    request: Request, user: Annotated[AuthUser | None, Depends(get_current_user)]
-) -> Any:
+def dashboard(request: Request, user: Annotated[AuthUser | None, Depends(get_current_user)]) -> Any:
     if user is None:
         return RedirectResponse("/signin", status_code=303)
     return _templates.TemplateResponse(request, "dashboard.html", {"email": user.email})

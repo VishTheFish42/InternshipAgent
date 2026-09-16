@@ -1156,7 +1156,10 @@ def _record(url: str) -> logging.LogRecord:
     (httpx._client, 'HTTP Request: %s %s "%s %d %s"'), which is what actually
     puts the raw URL — including any embedded credentials — into args."""
     return logging.LogRecord(
-        "httpx", logging.INFO, __file__, 1,
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
         'HTTP Request: %s %s "%s %d %s"',
         ("GET", url, "HTTP/1.1", 200, "OK"),
         None,

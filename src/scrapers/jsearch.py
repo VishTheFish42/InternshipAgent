@@ -39,6 +39,7 @@ def _is_blocked_domain(url: str) -> bool:
     host = urlparse(url).netloc.lower().removeprefix("www.")
     return any(host == d or host.endswith(f".{d}") for d in _BLOCKED_APPLY_DOMAINS)
 
+
 # Two query variants, alternated per poll by the caller (main.py) rather than
 # both queried every poll — a second query every 4 hours would double the
 # ~180/month request volume to ~360/month, over a 200/month free-tier quota.
