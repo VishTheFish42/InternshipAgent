@@ -840,3 +840,162 @@ Neither `profile.cache.json` nor `config/companies.yaml` is ever committed to gi
 | `structlog` | Listed in `requirements.txt` but not actually imported anywhere in `src/` — structured JSON logging is done via stdlib `logging.basicConfig()` with a manual JSON format string (`_configure_logging()` in `main.py`) instead. Dead dependency; worth removing from `requirements.txt` if nothing ends up using it. |
 | `mypy` | Static type checking |
 | `pytest` | Tests |
+
+---
+
+## 14. Multi-Tenant Architecture — Planned (v2)
+
+**Not currently implemented.** Everything in §1–§13 describes the live single-user personal tool: one Telegram chat, one `profile.cache.json`, one `config/companies.yaml`, one SQLite DB, all driven by env vars on one Railway deployment. This section documents the planned pivot to a shared multi-user product, decided through user brainstorming on 2026-08-18 (see `docs/tasks.md` for the dated log entry). It's a design direction to build toward, not a description of running code — every subsection below is prefixed accordingly where it matters.
+
+### 14.1 Scope decisions
+
+Four structural decisions were made explicitly, each with real alternatives considered and rejected:
+
+- **Single shared SaaS app**, not a deployable-template-per-user model. One deployment, one (eventually multi-tenant) database, real accounts — not everyone running their own Railway fork with their own API keys.
+- **Email is the default notification channel; Telegram is optional.** Telegram's interactive features (Mark Applied button, `/pause`/`/resume`, §9) don't cleanly generalize to a channel everyone has, and requiring an app install is real signup friction for a general audience. Email works for 100% of signups (it's needed for auth anyway) with no added setup; Telegram becomes an enhancement a user can link afterward.
+- **Fetch once, score per user.** Tier 2 job-board content (Indeed/JSearch/Adzuna/HN/RemoteOK) is not personal — the same posting exists regardless of who's asking — so it's wasteful to fetch it once per user. AI *scoring* is inherently personal (it's evaluated against each user's own profile), so that part does scale per user. This is the main cost driver at scale (§14.6).
+- **Billing is deferred to last**, per explicit instruction. The beta runs at the developer's own testing budget with no payment collection until every other piece here is built and working end-to-end.
+
+Scale target for the initial build: a small beta, dozens of users — not hundreds or thousands. That keeps the scheduler a simple in-process loop over users (§14.6) rather than requiring a distributed job queue; revisit if usage outgrows that.
+
+### 14.2 Accounts & auth
+
+Auth is handled by a managed provider (e.g. Clerk, Auth0, or Supabase Auth) rather than hand-rolled password/session code — far less security-sensitive surface to own (password hashing, verification emails, reset tokens, session/CSRF handling) for a product at this scale. Minimum supported sign-in: email+password and Google OAuth. The provider issues a stable external user ID that the app's own `users` table stores alongside app-specific state (§14.3).
+
+### 14.3 Data model changes
+
+The core structural change: **posting content becomes shared/app-wide; scoring and notification state becomes per-user.** Today's single `job_postings` table (§7.1) conflates both — `match_score`, `match_reasoning`, `missing_qualifications`, `notified`, `applied` are all columns on the posting itself, which only works because there's exactly one user. Splitting these apart:
+
+```sql
+-- job_postings loses its per-user columns; becomes purely shared content.
+-- (source, external_id, title, company, location, url, apply_url,
+--  description, posted_at, found_at — unchanged from §7.1.
+--  match_score, match_reasoning, missing_qualifications, profile_hash,
+--  notified, notified_at, applied, applied_at all MOVE to the new table below.)
+
+CREATE TABLE users (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    auth_provider_id    TEXT NOT NULL UNIQUE,  -- external ID from the auth provider (§14.2)
+    email               TEXT NOT NULL UNIQUE,
+    telegram_chat_id    TEXT,                  -- NULL until linked (§14.7); optional
+    telegram_link_token TEXT,                  -- one-time token for the deep-link flow, cleared once used
+    notifications_paused BOOLEAN DEFAULT FALSE, -- per-user equivalent of today's bot_state (§7.5)
+    min_relevance_score INTEGER DEFAULT 15,     -- per-user equivalent of profile.yaml (§1.5, FR-26)
+    created_at          DATETIME NOT NULL
+);
+
+CREATE TABLE resumes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id),
+    filename        TEXT NOT NULL,
+    storage_key     TEXT NOT NULL,   -- path in cloud object storage, not local disk
+    sha256_hash     TEXT NOT NULL,   -- per-file change detection, same idea as today's FR-18
+    is_active       BOOLEAN DEFAULT TRUE,  -- only active resumes are merged into the profile (FR-55)
+    uploaded_at     DATETIME NOT NULL
+);
+
+CREATE TABLE user_profile_cache (
+    user_id         INTEGER PRIMARY KEY REFERENCES users(id),  -- one merged profile per user
+    profile_json    JSON NOT NULL,   -- the per-user equivalent of profile.cache.json (§2.4)
+    profile_hash    TEXT NOT NULL,   -- hash of the active resume set; drives re-score-on-change (FR-56)
+    updated_at      DATETIME NOT NULL
+);
+
+CREATE TABLE user_companies (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER NOT NULL REFERENCES users(id),
+    company_name_raw    TEXT NOT NULL,     -- as entered by the user (FR-57)
+    company_lookup_id   INTEGER REFERENCES company_lookup(id),  -- resolved via the SHARED cache (§14.5)
+    added_at            DATETIME NOT NULL,
+    UNIQUE(user_id, company_name_raw)
+);
+
+CREATE TABLE user_posting_matches (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id                 INTEGER NOT NULL REFERENCES users(id),
+    job_posting_id          INTEGER NOT NULL REFERENCES job_postings(id),
+    match_score             INTEGER,      -- NULL = not yet scored for this user
+    match_reasoning         TEXT,
+    missing_qualifications  JSON,
+    profile_hash            TEXT,         -- this user's profile_hash at scoring time
+    notified                BOOLEAN DEFAULT FALSE,
+    notified_at             DATETIME,
+    applied                 BOOLEAN DEFAULT FALSE,
+    applied_at              DATETIME,
+    UNIQUE(user_id, job_posting_id)
+);
+```
+
+`company_lookup` (§7.2) is unchanged and stays shared — it's referenced by `user_companies.company_lookup_id` from every user watching that company, rather than being read from one global YAML file (§14.5). `notifications` (§7.3) gains a `user_id` FK (today's `recipient_id` text field becomes redundant once channel dispatch is per-user, §14.7). `bot_state` (§7.5) is superseded by the per-user columns now on `users` (`notifications_paused`, `telegram_chat_id`) — no more singleton row.
+
+### 14.4 Resume management
+
+Resumes upload through the web app into per-user cloud object storage (not a local `/resumes` directory, FR-53) — isolated per user, never shared. Users can delete any version (FR-54) and toggle each version active/inactive (FR-55); only active resumes are merged into `user_profile_cache`. Any of add / delete / toggle triggers the same extract → merge → re-score pipeline `--rebuild-profile` runs today (FR-19, FR-56), scoped to that one user — `resume_extractor.py`'s extraction and merge logic (§2.1–§2.3) is reused as-is, only the storage layer and the "which resumes count" selection change.
+
+### 14.5 Per-user company watchlist, shared discovery cache
+
+Each user's watchlist lives in `user_companies` and starts empty (FR-58) — no user's list, including the developer's own, seeds any other account. What *is* shared app-wide is company → ATS resolution (`company_lookup`, structurally unchanged from §7.2/§3 — the resolution cascade itself gains the Workday/`llm_scrape` tiering of §3.5, but stays a single shared cache either way): "Stripe uses Greenhouse" is impersonal metadata true for every user, so it's resolved once (§3.1's lookup-table → web-search cascade) and referenced by every `user_companies` row for every user who adds Stripe, rather than re-discovered per user. This is exactly why §3.5's coverage guarantee matters more, not less, once watchlists are user-driven: a dead-end resolution silently fails every user watching that company at once, not just one `companies.yaml`.
+
+### 14.6 Shared fetch / per-user score pipeline
+
+The scheduler (§10.1) restructures around the fetch-once/score-per-user split (§14.1):
+
+```
+Tier 2 sources (Indeed/JSearch/Adzuna/HN/RemoteOK):
+  fetched once app-wide, same cadence as today (§10.1) → shared job_postings pool
+  (identical to today's fetch/dedupe logic, §4 and §6 — nothing user-specific here)
+
+Tier 1 sources (company watchlists):
+  each polling cycle, compute the UNION of all active users' user_companies
+  → fetch each distinct company's ATS board at most once per cycle
+    (a company watched by 40 users still gets ONE Greenhouse/Lever fetch,
+    not 40 — FR-64)
+  → new postings land in the same shared job_postings pool as Tier 2
+
+Scoring (per user, the actual multi-tenant cost driver — FR-65):
+  for each active user:
+    for each job_posting reachable by that user (all of Tier 2's shared pool,
+    plus their own Tier 1 watchlist companies) with no existing
+    user_posting_matches row:
+      batch-score against that user's own user_profile_cache (same
+      batches-of-10 Claude call as today, §8.1 — just looped per user)
+      → insert/update user_posting_matches
+
+Notify (per user):
+  for each user's newly-scored user_posting_matches at/above their own
+  min_relevance_score (users.min_relevance_score, not a shared profile.yaml
+  value anymore):
+    send via that user's linked channels (§14.7)
+    mark notified=TRUE on the user_posting_matches row
+```
+
+This is still a simple in-process loop for the beta scale target (§14.1, FR-66) — no job queue yet. It's the natural place to revisit if user count grows enough that per-cycle wall-clock time or Claude request volume becomes a problem.
+
+### 14.7 Notification channels
+
+Email is the default, always-on channel (FR-60) — sent to the signup address, no linking step required. A user can additionally link Telegram (FR-61) via a one-time deep-link: the app generates a `telegram_link_token`, the user taps a link that opens a chat with the bot pre-filled with `/start <token>`, and the bot's existing update-polling loop (§10.2) resolves the token to a `user_id` and stores the resulting `chat.id` on `users.telegram_chat_id`. From then on, notification dispatch for that user fans out to every linked channel: email always, Telegram additionally if `telegram_chat_id` is set.
+
+Today's individual/burst message formats (§9.1, §9.2) and the "Mark Applied" button (§9.4) carry over unchanged for the Telegram channel. Email needs its own non-interactive equivalent (FR-62) — the same information (company, title, score, reasoning, missing qualifications, apply link), but "Mark Applied" becomes a plain link to an authenticated endpoint instead of an inline Telegram button, since email has no callback mechanism.
+
+### 14.8 Deployment & storage notes
+
+Two infrastructure pieces that don't carry over cleanly from the single-user deployment (§11):
+
+- **SQLite likely doesn't hold up.** The 2026-08-15 WAL/busy-timeout fix (`docs/tasks.md`) was sized for occasional overlap between a handful of independent scheduled jobs, not sustained concurrent writes across dozens of users' scoring/notification cycles. Worth evaluating a managed Postgres before or shortly after the first real multi-user beta, not as an afterthought.
+- **Resume storage moves off local disk** to cloud object storage (e.g. S3-compatible), per-user-scoped paths, since `/resumes` (FR-13, gitignored, local-machine-only per NFR-14) doesn't exist in a hosted multi-tenant deployment. `profile.cache.json`'s env-var-sync workaround (§2.4, `PROFILE_CACHE`) also goes away entirely — replaced by `user_profile_cache` rows written directly by the app, no manual Railway CLI step (§11's "Resume update workflow") needed per user.
+
+### 14.9 Billing — deferred
+
+Explicitly the last piece to build (FR-67). Claude API cost scales with active user count (§14.6's per-user scoring loop is the driver) in a way NFR-09's $10/month single-user budget never had to account for. No pricing model, payment collection, or usage metering is designed yet — intentional, per the 2026-08-18 decision to get the rest of the product working first at developer-funded cost.
+
+### 14.10 Coverage visibility for watchlist companies — Planned (v2)
+
+§3.5 fixes the underlying bug (a company can no longer be `resolved` with no scraper behind it), but Tier B (`llm_scrape`) and `unresolved` companies are still meaningfully lower-confidence than Tier A — a bespoke page-scrape can miss a listing a JSON API wouldn't, and an unresolved company isn't being polled at all yet. In the single-user tool that gap is invisible by design (§3.4's `db stats` is opt-in, CLI-only). That doesn't hold for a general product: a user who explicitly adds a company via `user_companies` (§14.5, FR-57) has no other way to know whether it's fully covered, degraded, or not covered yet.
+
+Each row a user's watchlist resolves to (via `company_lookup.ats_type`/`status`) surfaces a coverage indicator in the web UI:
+
+- Tier A (`greenhouse`/`lever`/`workday`) → "Fully covered."
+- Tier B (`llm_scrape`) → "Covered (best-effort) — we're still building full coverage for this company," surfaced rather than presented identically to Tier A.
+- `unresolved` → "Not yet covered — retrying automatically," rather than the silent background retry (§3.1 step 5) it is today.
+
+This turns exactly the failure mode that caused the missed Nvidia posting — a company that looks the same as any other on the list but silently isn't being watched — into something a user can actually see and account for, instead of discovering it after the fact.

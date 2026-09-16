@@ -86,6 +86,56 @@
 | FR-40 | `python -m src.db stats`: print summary of total postings found/scored/alerted, unresolved companies (with names), and estimated API cost to date. |
 | FR-41 | The system SHALL emit a structured JSON log line for every run summarizing: sources polled, postings found, postings new, postings scored, alerts sent, errors, and estimated cost. |
 
+### 1.8 Multi-Tenant Accounts & Auth — Planned (v2)
+
+**Not currently implemented.** The system today (FR-01–FR-41) is a single-user personal tool: one Telegram chat ID, one profile, one `companies.yaml`, all configured via local files/env vars on one deployment. The requirements below (FR-50 onward) describe a planned pivot to a shared multi-user product, decided through user brainstorming on 2026-08-18. They supersede nothing in FR-01–FR-41 yet — v1 keeps running as-is until this is built.
+
+| ID | Requirement |
+|---|---|
+| FR-50 | The system SHALL support multiple independent user accounts on one shared deployment, each with fully isolated data: profile, resumes, company watchlist, posting match/notification state, and notification preferences. |
+| FR-51 | Authentication SHALL be handled by a managed third-party auth provider (e.g. Clerk, Auth0, or Supabase Auth) rather than custom-built password/session handling, supporting at minimum email+password and Google OAuth sign-in. |
+| FR-52 | Every user-scoped database table SHALL be keyed by a `user_id` foreign key. No query path SHALL be able to return one user's data to another user. |
+
+### 1.9 Resume Management — Planned (v2)
+
+| ID | Requirement |
+|---|---|
+| FR-53 | Users SHALL upload one or more resume PDFs through the web app (not a local `/resumes` directory). Uploaded resumes SHALL be stored per-user in cloud object storage, isolated from other users' files. |
+| FR-54 | Users SHALL be able to delete any previously uploaded resume version. |
+| FR-55 | Users SHALL be able to mark each uploaded resume version as active or inactive. Only resumes marked active SHALL be merged into that user's scoring profile (the per-user equivalent of today's `profile.cache.json`, FR-16). An inactive resume stays on file but does not affect scoring. |
+| FR-56 | Adding a resume, deleting a resume, or toggling a resume's active state SHALL trigger the same re-extract/re-merge/re-score pipeline that `--rebuild-profile` triggers today (FR-19), scoped to that user only — other users' profiles and re-scoring are unaffected. |
+
+### 1.10 Per-User Company Watchlist — Planned (v2)
+
+| ID | Requirement |
+|---|---|
+| FR-57 | Each user SHALL maintain their own company watchlist through the web app — the per-user equivalent of today's `config/companies.yaml` (FR-07), editable via add/remove in the UI rather than a YAML file. |
+| FR-58 | Every new user account SHALL start with an empty watchlist. No user's personal watchlist (including the developer's own) SHALL be used as a seed or default for any other user's account. |
+| FR-59 | Company → ATS resolution (FR-08, FR-09) SHALL remain a single shared, app-wide cache keyed by normalized company name, reused across every user watching that company — this is impersonal metadata (which ATS a company uses), not personal data, so sharing it introduces no cross-user data leak. |
+
+### 1.11 Notification Channels — Planned (v2)
+
+| ID | Requirement |
+|---|---|
+| FR-60 | Email SHALL be the default notification channel for every account, sent to the address used at signup, with no additional setup required. |
+| FR-61 | Users MAY additionally link a Telegram chat to their account, via a one-time deep-link/bot-start flow, to also receive the existing richer interactive Telegram experience (individual/burst alerts, the "Mark Applied" button, `/pause`/`/resume`) on top of email. Telegram SHALL remain fully optional, never required to use the product. |
+| FR-62 | A user who has not linked Telegram SHALL still receive every notification via email, using a non-interactive equivalent of the individual/burst message formats (FR-30a, FR-31) — e.g. a "Mark Applied" link to an authenticated endpoint in place of Telegram's inline button. |
+
+### 1.12 Shared Fetch / Per-User Score Pipeline — Planned (v2)
+
+| ID | Requirement |
+|---|---|
+| FR-63 | Tier 2 job-board sources (Indeed, JSearch, Adzuna, HN, RemoteOK) SHALL be fetched once app-wide on the shared schedule, not once per user, and stored in a shared postings pool — these sources return the same public postings regardless of which user is asking. |
+| FR-64 | Each Tier 1 company SHALL be fetched at most once per polling cycle app-wide if it appears on at least one active user's watchlist (union across all users), not once per user watching it. |
+| FR-65 | Every posting reachable by a given user (the full Tier 2 pool, plus their own Tier 1 watchlist companies) SHALL be scored independently against that user's own profile — the same posting can carry a different score, reasoning, and `missing_qualifications` per user. This is the main driver of Claude API cost scaling with user count (see FR-67). |
+
+### 1.13 Deployment Scale & Billing — Planned (v2)
+
+| ID | Requirement |
+|---|---|
+| FR-66 | The scheduler for the initial multi-tenant beta SHALL remain a simple in-process loop over active users (no distributed job queue), sized for a small beta — dozens of users, not hundreds or more. Revisit if/when scale exceeds that. |
+| FR-67 | **Deferred — explicitly the last thing to build.** Billing/subscription to cover per-user Claude API costs at scale is out of scope for the initial multi-tenant build. Per explicit user decision (2026-08-18): the beta SHALL run at the developer's own cost/testing budget with no payment collection until every other multi-tenant requirement in §1.8–§1.12 is implemented and working. |
+
 ### 1.14 Company Scraper Coverage Guarantee — Implemented (FR-72 pending the v2 web UI)
 
 Root-caused from a real missed posting: an Nvidia SWE internship posted 2026-08-19 never generated a Telegram alert because Nvidia resolved to `ats_type="custom"` (FR-08) with no scraper behind it — a state the existing discovery pipeline treats identically to a fully-working one. The same dead end affects 26 companies in a real `companies.yaml`, including Google, Meta, Microsoft, Apple, Amazon, Netflix, Tesla, Intel, and AMD. This applies to the current single-user tool, not only the planned multi-tenant product (§1.8–§1.13) — but it is the load-bearing requirement for the "add any company you care about" pitch of the general product, since a company a stranger adds is exactly as likely to land in this dead end as Nvidia did. FR-68–FR-71 and FR-73 are now all implemented (`docs/design.md` §3.3/§3.5, `docs/tasks.md` T-308/T-309/T-310/T-311/T-312/T-470–T-475) — closing the coverage gap for genuinely any company, not just ones on a known ATS, and (FR-73) making sure a company the user actually cares about isn't starved of the scarce search-API quota by the rest of the watchlist. FR-72 remains not implemented (depends on the not-yet-built v2 web UI).
@@ -151,6 +201,14 @@ Root-caused from a real missed posting: an Nvidia SWE internship posted 2026-08-
 | NFR-18 | Unit tests SHALL cover the resume extractor, matcher, deduplicator, notifier, and company discoverer. |
 | NFR-19 | The system SHALL be deployable to Railway with a single `railway up` after initial setup. |
 
+### 2.6 Multi-Tenant Isolation — Planned (v2)
+
+| ID | Requirement |
+|---|---|
+| NFR-20 | **Not currently implemented** (§1.8–§1.13). Every user-scoped read/write path SHALL be scoped by `user_id` such that no user can read, modify, or receive a notification about another user's resumes, profile, watchlist, or posting-match state, even under application bugs in unrelated code paths (e.g. via a DB-level constraint or a shared query-scoping helper, not ad-hoc per-endpoint checks alone). |
+
+**Note on NFR-09 (cost budget):** the $10/month figure applies to the original single-user personal deployment described in FR-01–FR-41. It does not apply to the multi-tenant beta (§1.8–§1.13), which is explicitly developer-funded/uncapped for testing purposes until billing (FR-67) is built.
+
 ---
 
 ## 3. Constraints
@@ -166,8 +224,8 @@ Root-caused from a real missed posting: an Nvidia SWE internship posted 2026-08-
 ## 4. Out of Scope (v1)
 
 - Auto-submitting applications.
-- Email or SMS notifications (Telegram only).
-- A web UI or dashboard.
+- ~~Email or SMS notifications (Telegram only).~~ **Superseded by §1.11 (planned v2)**: email becomes the default channel, Telegram an optional add-on.
+- ~~A web UI or dashboard.~~ **Superseded by §1.8–§1.13 (planned v2)**: a web app is required for account signup, resume upload/management, and watchlist editing.
 - Tracking application status post-submission.
 - International internships outside the United States.
 - Calendar or deadline integration.

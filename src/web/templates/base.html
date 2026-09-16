@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}InternshipAgent{% endblock %}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f6f8; color: #1c1e21; margin: 0;
+      display: flex; min-height: 100vh; align-items: center; justify-content: center;
+    }
+    .card {
+      background: #fff; border-radius: 10px; padding: 2rem 2.25rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08); width: 100%; max-width: 380px;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 1.25rem; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; margin: 0.9rem 0 0.3rem; }
+    input[type=email], input[type=password] {
+      width: 100%; padding: 0.55rem 0.65rem; border: 1px solid #d0d3d9;
+      border-radius: 6px; font-size: 0.95rem;
+    }
+    button {
+      width: 100%; margin-top: 1.4rem; padding: 0.6rem; border: none;
+      border-radius: 6px; background: #2563eb; color: #fff; font-size: 0.95rem;
+      font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    .error { background: #fef2f2; color: #b91c1c; padding: 0.6rem 0.75rem; border-radius: 6px; font-size: 0.85rem; margin-top: 1rem; }
+    .success { background: #f0fdf4; color: #15803d; padding: 0.6rem 0.75rem; border-radius: 6px; font-size: 0.85rem; margin-top: 1rem; }
+    .footer-link { margin-top: 1.25rem; font-size: 0.85rem; text-align: center; }
+    .footer-link a { color: #2563eb; text-decoration: none; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
+    .topbar a { color: #6b7280; font-size: 0.85rem; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

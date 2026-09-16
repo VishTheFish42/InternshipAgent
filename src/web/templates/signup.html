@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Sign up — InternshipAgent{% endblock %}
+{% block content %}
+  <h1>Create your account</h1>
+  <form method="post" action="/signup">
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" value="{{ email or '' }}" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" minlength="8" required>
+    <label for="confirm_password">Confirm password</label>
+    <input type="password" id="confirm_password" name="confirm_password" minlength="8" required>
+    <button type="submit">Sign up</button>
+  </form>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if success %}<div class="success">{{ success }}</div>{% endif %}
+  <div class="footer-link">Already have an account? <a href="/signin">Sign in</a></div>
+{% endblock %}

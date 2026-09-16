@@ -19,6 +19,16 @@ alembic>=1.13.0
 # ── Scheduling ────────────────────────────────────────────────────────────────
 apscheduler>=3.10.0
 
+# ── Web app (multi-tenant, T-1101) ──────────────────────────────────────────────
+# Supabase Auth — same pattern as Telegram above: plain HTTP via httpx against
+# Supabase's GoTrue REST API, no supabase-py SDK (avoids pulling in postgrest/
+# storage/realtime we don't use yet for an auth-only integration).
+fastapi>=0.115.0
+uvicorn>=0.30.0
+jinja2>=3.1.0                # server-rendered sign-up/sign-in/dashboard pages
+python-multipart>=0.0.9      # required by Starlette to parse HTML form posts
+itsdangerous>=2.2.0          # signs the session cookie (Starlette SessionMiddleware)
+
 # ── Config & validation ───────────────────────────────────────────────────────
 pydantic>=2.0.0
 pydantic-settings>=2.0.0    # loads .env automatically
