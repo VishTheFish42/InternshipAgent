@@ -79,7 +79,8 @@ class CompanyLookup(Base):
     name_normalized: Mapped[str | None] = mapped_column(String)
     ats_type: Mapped[str | None] = mapped_column(
         String
-    )  # 'greenhouse' | 'lever' | 'workday' | 'custom'
+    )  # 'greenhouse' | 'lever' | 'workday' | 'llm_scrape' | 'custom' (legacy, see
+    # src/company_discoverer.py's CompanyRecord.ats_type comment)
     slug: Mapped[str | None] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(

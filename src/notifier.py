@@ -57,6 +57,10 @@ _SOURCE_LABELS = {
     "hn": "HackerNews",
     "remoteok": "RemoteOK",
     "adzuna": "Adzuna",
+    # "workday" isn't listed — the generic prefix.title() fallback below
+    # already produces "Workday" correctly. "llm_scrape" needs an explicit
+    # entry since its prefix.title() would render as "Llm_Scrape".
+    "llm_scrape": "Company Site",
 }
 
 

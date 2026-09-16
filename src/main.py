@@ -52,7 +52,17 @@ from src.notifier import (
     send_message_with_retry,
 )
 from src.resume_extractor import rebuild_profile
-from src.scrapers import adzuna, greenhouse, hn, indeed_rss, jsearch, lever, remoteok
+from src.scrapers import (
+    adzuna,
+    greenhouse,
+    hn,
+    indeed_rss,
+    jsearch,
+    lever,
+    llm_scrape,
+    remoteok,
+    workday,
+)
 from src.scrapers.base import RawPosting
 
 _RESUMES_DIR = Path("resumes")
@@ -60,14 +70,18 @@ _PROFILE_YAML = Path("profile.yaml")
 _COMPANIES_YAML = Path("config/companies.yaml")
 _log = logging.getLogger(__name__)
 
-# Every registered Tier 1/2 source polled on the *main* cycle. Adzuna is
-# deliberately excluded here and polled on its own weekly job instead
-# (run_adzuna_poll, below) — its free tier is 250 calls/month, which the main
-# cycle's hourly interval would exhaust in under two weeks. YC and Dice are
-# not yet wired into either schedule.
+# Every registered Tier 1/2 source polled on the *main* cycle. Adzuna and
+# JSearch are deliberately excluded here and polled on their own slower jobs
+# instead (run_adzuna_poll/run_jsearch_poll, below) — both are metered per
+# month, which the main cycle's interval would exhaust quickly. llm_scrape
+# (Tier B, design.md §3.5) is excluded for a different reason — it costs a
+# real Claude call per company per poll, not quota — and also runs on its
+# own slower job (run_llm_scrape_poll). YC and Dice are not yet wired into
+# any schedule.
 _SOURCES: list[tuple[str, Callable[[Session], list[RawPosting]]]] = [
     ("greenhouse", greenhouse.fetch_for_resolved_companies),
     ("lever", lever.fetch_for_resolved_companies),
+    ("workday", workday.fetch_for_resolved_companies),
     ("indeed", lambda _session: indeed_rss.fetch_all()),
     ("hn", lambda _session: hn.fetch_current_month_postings()),
     ("remoteok", lambda _session: remoteok.fetch()),
@@ -84,18 +98,36 @@ def _load_yaml_config(path: Path = _PROFILE_YAML) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
-def _load_company_names(settings: Settings, path: Path = _COMPANIES_YAML) -> list[str]:
+def _load_companies_yaml_list(
+    settings: Settings, key: str, path: Path = _COMPANIES_YAML
+) -> list[str]:
     """Prefer COMPANIES_CONFIG (base64 companies.yaml, set for the deployed
     container since config/companies.yaml is gitignored); fall back to the
-    local file for dev."""
+    local file for dev. Shared by _load_company_names() (key="companies")
+    and _load_priority_company_names() (key="priority_companies", T-312)
+    — same file, same env-var-vs-local-file precedence, different key."""
     if settings.companies_config:
         raw = base64.b64decode(settings.companies_config).decode("utf-8")
         data = yaml.safe_load(raw) or {}
-        return list(data.get("companies", []))
+        return list(data.get(key, []))
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return list(data.get("companies", []))
+    return list(data.get(key, []))
+
+
+def _load_company_names(settings: Settings, path: Path = _COMPANIES_YAML) -> list[str]:
+    return _load_companies_yaml_list(settings, "companies", path)
+
+
+def _load_priority_company_names(settings: Settings, path: Path = _COMPANIES_YAML) -> list[str]:
+    """Companies retried on the tighter cooldown (T-312, design.md §3.3) —
+    an optional, opt-in subset via companies.yaml's `priority_companies:`
+    list. Empty by default; not required. Doesn't need to be a subset of
+    `companies:` — retry_unresolved() only ever acts on companies already
+    in company_lookup, so a name here that was never seeded is simply a
+    no-op, not an error."""
+    return _load_companies_yaml_list(settings, "priority_companies", path)
 
 
 # ── Fetch & dedupe ────────────────────────────────────────────────────────────
@@ -430,9 +462,30 @@ def retry_unresolved_companies(session: Session, settings: Settings) -> None:
     request. Unresolved companies are still visible via `python -m src.db
     stats`; this just keeps retrying them in the background without pushing
     a message about it.
+
+    Priority companies (companies.yaml's optional `priority_companies:`
+    list, T-312) get retry_unresolved()'s tighter cooldown — the point is
+    not missing new postings from companies the user actually cares about,
+    even under SerpAPI's tight free-tier quota (confirmed live 2026-08-20:
+    250 searches/month, easily exhausted by treating every company
+    identically). Everything else gets the looser default cooldown so the
+    budget lasts the month instead of being burned on the very first
+    eligible batch.
+
+    Logged at WARNING rather than INFO when a non-trivial batch resolves
+    nothing at all — that specific shape (N attempted, 0 resolved,
+    repeated hour after hour) is the actual, previously-invisible signature
+    of a SerpAPI outage or exhausted quota (found live 2026-08-20:
+    `_serpapi()` itself logs nothing on failure, so this summary line was
+    the only place such an outage could ever surface). A single 0-resolved
+    hour is normal noise; this exists so a *sustained* one is at least
+    visible to whoever is watching logs, not just theoretically present in
+    them (NFR-03 already documents that nothing pushes this to the user).
     """
-    retry_result = retry_unresolved(session, settings.search_api_key, min_age_hours=1)
-    _log.info(
+    priority_names = set(_load_priority_company_names(settings))
+    retry_result = retry_unresolved(session, settings.search_api_key, priority_names=priority_names)
+    log = _log.warning if retry_result.attempted > 0 and retry_result.resolved == 0 else _log.info
+    log(
         "Unresolved-company retry: %d attempted, %d resolved",
         retry_result.attempted,
         retry_result.resolved,
@@ -494,6 +547,61 @@ def run_jsearch_poll(session: Session, settings: Settings) -> None:
         "intern" if is_intern_slot else "co-op",
         len(postings),
         new_count,
+    )
+
+
+def run_llm_scrape_poll(session: Session, settings: Settings) -> None:
+    """
+    Poll every ats_type="llm_scrape" (Tier B, design.md §3.5) company on its
+    own 6-hourly job, deliberately separate from the main cycle — unlike
+    every other Tier 1 source (Greenhouse/Lever/Workday, all a free JSON
+    GET), this one costs a real Claude call per company per poll, so it
+    gets the same slower-cadence treatment Adzuna/JSearch already get for
+    their own (quota, not $) cost reasons (FR-71). New postings are stored
+    unscored; the next main cycle picks them up for scoring like any other
+    source.
+
+    Unlike Adzuna/JSearch, this poll's own cost is real and worth tracking
+    on its own — not just folded into the next main cycle's scoring cost —
+    so it writes its own RunLog row (NFR-22) rather than only logging a
+    summary line. get_stats()'s cumulative estimated_cost_usd already sums
+    across every RunLog row, so this needs no new tracking infrastructure,
+    just reusing what NFR-10 already built for the main cycle.
+
+    The row's profile_hash is stamped with the *current* profile hash, not
+    left None — run_cycle()'s profile-change detection (§8's profile_hash
+    comparison) reads whichever RunLog row is most recent, and this job's
+    row can easily be that row given it runs on its own schedule. Leaving
+    profile_hash None here would make every main cycle immediately after an
+    llm_scrape poll spuriously detect a "profile change" and re-score every
+    unnotified posting for no reason — stamping the real current hash keeps
+    that comparison correct regardless of which job ran last.
+    """
+    started_at = _now()
+    max_posting_age_days = _load_yaml_config().get("matching", {}).get("max_posting_age_days", 7)
+    result = llm_scrape.fetch_for_resolved_companies(session, settings)
+    new_count = _dedupe_and_store(session, result.postings, max_posting_age_days)
+    _log.info(
+        "llm_scrape poll: %d companies polled, %d found, %d new, est. cost $%.4f",
+        result.companies_polled,
+        len(result.postings),
+        new_count,
+        result.estimated_cost_usd,
+    )
+    log_run(
+        session,
+        {
+            "started_at": started_at,
+            "finished_at": _now(),
+            "sources_polled": ["llm_scrape"],
+            "postings_found": len(result.postings),
+            "postings_new": new_count,
+            "postings_scored": 0,
+            "alerts_sent": 0,
+            "errors": [],
+            "profile_hash": hash_profile(settings.load_profile()),
+            "estimated_cost_usd": result.estimated_cost_usd,
+        },
     )
 
 
@@ -628,6 +736,10 @@ def main() -> None:
         with session_scope(engine) as session:
             run_jsearch_poll(session, settings)
 
+    def _scheduled_llm_scrape() -> None:
+        with session_scope(engine) as session:
+            run_llm_scrape_poll(session, settings)
+
     def _scheduled_telegram_poll() -> None:
         with session_scope(engine) as session:
             process_telegram_updates(session, settings)
@@ -640,6 +752,7 @@ def main() -> None:
     scheduler.add_job(_scheduled_company_retry, IntervalTrigger(hours=1), max_instances=1)
     scheduler.add_job(_scheduled_adzuna, IntervalTrigger(weeks=1), max_instances=1)
     scheduler.add_job(_scheduled_jsearch, IntervalTrigger(hours=4), max_instances=1)
+    scheduler.add_job(_scheduled_llm_scrape, IntervalTrigger(hours=6), max_instances=1)
     # Polls Telegram for /pause, /resume, and "Mark Applied" taps — decoupled
     # from the hourly cycle and deliberately fast (a few seconds, not minutes)
     # so a button tap feels close to instant rather than sitting unconfirmed

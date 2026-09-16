@@ -14,6 +14,7 @@ from src.company_discoverer import RetryResult, SeedResult
 from src.config import Settings
 from src.db import (
     JobPosting,
+    RunLog,
     get_bot_state,
     init_db,
     mark_notified,
@@ -27,6 +28,7 @@ from src.main import (
     _dedupe_and_store,
     _fetch_all_postings,
     _load_company_names,
+    _load_priority_company_names,
     _load_yaml_config,
     _notify_and_mark,
     _score_and_record,
@@ -38,11 +40,13 @@ from src.main import (
     run_adzuna_poll,
     run_cycle,
     run_jsearch_poll,
+    run_llm_scrape_poll,
 )
-from src.matcher import ScoredPosting, ScoringResult
+from src.matcher import ScoredPosting, ScoringResult, hash_profile
 from src.notifier import SendResult
 from src.scrapers import jsearch
 from src.scrapers.base import RawPosting
+from src.scrapers.llm_scrape import LlmScrapeResult
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -140,6 +144,30 @@ def test_load_company_names_prefers_companies_config_env_over_file(tmp_path: Pat
     path.write_text("companies:\n  - FromFile\n", encoding="utf-8")
     encoded = base64.b64encode(b"companies:\n  - FromEnv\n").decode()
     assert _load_company_names(_settings(companies_config=encoded), path) == ["FromEnv"]
+
+
+# ── _load_priority_company_names ─────────────────────────────────────────────
+
+
+def test_load_priority_company_names_missing_file_returns_empty(tmp_path: Path) -> None:
+    assert _load_priority_company_names(_settings(), tmp_path / "nope.yaml") == []
+
+
+def test_load_priority_company_names_reads_file(tmp_path: Path) -> None:
+    path = tmp_path / "companies.yaml"
+    path.write_text(
+        "companies:\n  - Stripe\n  - Google\npriority_companies:\n  - Google\n",
+        encoding="utf-8",
+    )
+    assert _load_priority_company_names(_settings(), path) == ["Google"]
+
+
+def test_load_priority_company_names_optional_key_absent(tmp_path: Path) -> None:
+    """companies.yaml files written before T-312 have no priority_companies
+    key at all — must not error, just behave as if it's empty."""
+    path = tmp_path / "companies.yaml"
+    path.write_text("companies:\n  - Stripe\n", encoding="utf-8")
+    assert _load_priority_company_names(_settings(), path) == []
 
 
 # ── _fetch_all_postings ───────────────────────────────────────────────────────
@@ -695,6 +723,24 @@ def test_retry_unresolved_companies_calls_retry_unresolved(engine: Engine) -> No
     mock_retry.assert_called_once()
 
 
+def test_retry_unresolved_companies_forwards_priority_names(engine: Engine) -> None:
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main._load_priority_company_names",
+            return_value=["Nvidia", "Google"],
+        ),
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
+        ) as mock_retry,
+    ):
+        retry_unresolved_companies(session, _settings())
+
+    _args, kwargs = mock_retry.call_args
+    assert kwargs["priority_names"] == {"Nvidia", "Google"}
+
+
 def test_retry_unresolved_companies_sends_no_telegram_message(engine: Engine) -> None:
     """The old digest sent a summary message; this replacement is silent —
     only the retry itself happens, nothing is pushed to Telegram."""
@@ -709,6 +755,60 @@ def test_retry_unresolved_companies_sends_no_telegram_message(engine: Engine) ->
         retry_unresolved_companies(session, _settings())
 
     mock_send.assert_not_called()
+
+
+def test_retry_unresolved_companies_warns_when_nothing_resolves(
+    engine: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """N attempted, 0 resolved is the previously-invisible signature of a
+    SerpAPI outage/exhausted quota (found live 2026-08-20) — must log at
+    WARNING, not INFO, so a sustained one is at least visible to whoever is
+    watching logs."""
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=5, resolved=0, still_unresolved=5),
+        ),
+        caplog.at_level(logging.WARNING, logger="src.main"),
+    ):
+        retry_unresolved_companies(session, _settings())
+
+    assert "5 attempted, 0 resolved" in caplog.text
+
+
+def test_retry_unresolved_companies_does_not_warn_with_no_candidates(
+    engine: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """0 attempted, 0 resolved is the normal, expected shape when there's
+    simply nothing to retry — must not falsely read as an outage."""
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=0, resolved=0, still_unresolved=0),
+        ),
+        caplog.at_level(logging.WARNING, logger="src.main"),
+    ):
+        retry_unresolved_companies(session, _settings())
+
+    assert caplog.text == ""
+
+
+def test_retry_unresolved_companies_does_not_warn_on_partial_success(
+    engine: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.retry_unresolved",
+            return_value=RetryResult(attempted=3, resolved=1, still_unresolved=2),
+        ),
+        caplog.at_level(logging.WARNING, logger="src.main"),
+    ):
+        retry_unresolved_companies(session, _settings())
+
+    assert caplog.text == ""
 
 
 # ── run_adzuna_poll ────────────────────────────────────────────────────────────
@@ -779,6 +879,78 @@ def test_run_jsearch_poll_uses_coop_query_in_odd_slot(engine: Engine) -> None:
         run_jsearch_poll(session, _settings(jsearch_api_key="rapidapi-key"))
 
     mock_fetch.assert_called_once_with("rapidapi-key", query=jsearch.COOP_QUERY)
+
+
+# ── run_llm_scrape_poll ───────────────────────────────────────────────────────
+
+
+def test_run_llm_scrape_poll_fetches_and_dedupes(engine: Engine) -> None:
+    postings = [_raw_posting(source="llm_scrape:acme", external_id="https://acme.example.com/1")]
+    result = LlmScrapeResult(
+        postings=postings,
+        companies_polled=1,
+        input_tokens=100,
+        output_tokens=50,
+        estimated_cost_usd=0.0012,
+    )
+
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.llm_scrape.fetch_for_resolved_companies", return_value=result
+        ) as mock_fetch,
+    ):
+        run_llm_scrape_poll(session, _settings())
+
+    mock_fetch.assert_called_once()
+    with session_scope(engine) as session:
+        assert session.query(JobPosting).count() == 1
+
+
+def test_run_llm_scrape_poll_writes_run_log_with_cost_and_current_profile_hash(
+    engine: Engine,
+) -> None:
+    """estimated_cost_usd must be recorded (NFR-22), and profile_hash must
+    be the *current* hash, not None — leaving it None would make the next
+    main cycle's profile-change detection spuriously fire (see this
+    function's own docstring for why)."""
+    settings = _settings()
+    result = LlmScrapeResult(
+        postings=[],
+        companies_polled=2,
+        input_tokens=200,
+        output_tokens=80,
+        estimated_cost_usd=0.0025,
+    )
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.llm_scrape.fetch_for_resolved_companies", return_value=result),
+    ):
+        run_llm_scrape_poll(session, settings)
+
+    with session_scope(engine) as session:
+        run_logs = session.query(RunLog).all()
+        assert len(run_logs) == 1
+        assert run_logs[0].sources_polled == ["llm_scrape"]
+        assert run_logs[0].estimated_cost_usd == 0.0025
+        assert run_logs[0].profile_hash == hash_profile(settings.load_profile())
+        assert run_logs[0].profile_hash is not None
+
+
+def test_run_llm_scrape_poll_handles_no_resolved_companies(engine: Engine) -> None:
+    with (
+        session_scope(engine) as session,
+        patch(
+            "src.main.llm_scrape.fetch_for_resolved_companies",
+            return_value=LlmScrapeResult(),
+        ),
+    ):
+        run_llm_scrape_poll(session, _settings())
+
+    with session_scope(engine) as session:
+        assert session.query(JobPosting).count() == 0
+        assert session.query(RunLog).count() == 1
 
 
 # ── process_telegram_updates ─────────────────────────────────────────────────

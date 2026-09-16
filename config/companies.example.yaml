@@ -10,3 +10,13 @@ companies:
   - OpenAI
   - Figma
   - Linear
+
+# Optional. A subset of `companies` (or any name — it doesn't have to
+# already be listed above) that you care about most. Unresolved/broken
+# companies here are retried on a tighter cooldown (every few hours)
+# instead of the default once-a-week cooldown everything else gets — so
+# they get first claim on the search API's limited monthly quota rather
+# than getting drowned out by a large watchlist. Leave empty or omit
+# entirely if you don't need this.
+priority_companies:
+  - Google
