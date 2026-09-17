@@ -7,14 +7,23 @@ from __future__ import annotations
 import os
 
 # WebSettings is validated at import time (src/web/app.py instantiates it at
-# module scope) — must be set before importing the app below.
+# module scope) — must be set before importing the app below. SUPABASE_DB_URL's
+# value here is never actually connected to — every test overrides get_db_session
+# with its own in-memory engine (see _client() below), so this just needs to be
+# a syntactically valid SQLAlchemy URL for the (unused) module-level engine.
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_ANON_KEY", "test-anon-key")
+os.environ.setdefault("SUPABASE_DB_URL", "sqlite:///:memory:")
 os.environ.setdefault("SESSION_SECRET", "test-session-secret")
 
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import Session as OrmSession  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
 
-from src.web.app import app, get_auth_client  # noqa: E402
+from src.web.app import app, get_auth_client, get_db_session  # noqa: E402
+from src.web.db import Base as WebDbBase  # noqa: E402
+from src.web.db import User  # noqa: E402
 from src.web.supabase_auth import AuthSession, AuthUser, SupabaseAuthError  # noqa: E402
 
 # ── Fake auth client ─────────────────────────────────────────────────────────
@@ -63,8 +72,33 @@ class FakeAuthClient:
 
 
 def _client(fake: FakeAuthClient) -> TestClient:
+    """Fresh in-memory DB per test (via get_db_session override), fresh fake
+    auth per test (via get_auth_client override) — same isolation as every
+    other test file in this project's DB tests (e.g. test_db.py's engine
+    fixture), just wired through FastAPI's dependency_overrides instead of a
+    pytest fixture."""
+    # TestClient runs request handlers in a worker thread (FastAPI's
+    # run_in_threadpool) — SQLite's default SingletonThreadPool would give
+    # that thread its own, separate, empty :memory: database from the one
+    # tables are created on here. StaticPool shares one real connection
+    # across every thread instead.
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    WebDbBase.metadata.create_all(engine)
+
+    def _override_db_session():
+        session = OrmSession(engine)
+        try:
+            yield session
+        finally:
+            session.close()
+
     app.dependency_overrides[get_auth_client] = lambda: fake
-    return TestClient(app)
+    app.dependency_overrides[get_db_session] = _override_db_session
+    client = TestClient(app)
+    client.db_engine = engine  # type: ignore[attr-defined]  # test-only convenience
+    return client
 
 
 # ── Sign-up ──────────────────────────────────────────────────────────────────
@@ -79,6 +113,11 @@ def test_signup_creates_session_and_redirects_to_dashboard():
     )
     assert response.status_code == 303
     assert response.headers["location"] == "/dashboard"
+
+    with OrmSession(client.db_engine) as db:  # type: ignore[attr-defined]
+        user = db.query(User).one()
+        assert user.email == "a@example.com"
+        assert user.auth_provider_id == "1"
 
 
 def test_signup_rejects_mismatched_passwords_without_calling_provider():
@@ -103,6 +142,11 @@ def test_signup_with_confirmation_required_shows_check_email_message():
     )
     assert response.status_code == 200
     assert "check your email" in response.text.lower()
+
+    with OrmSession(client.db_engine) as db:  # type: ignore[attr-defined]
+        # No session yet from Supabase (confirmation pending) — the users row
+        # is deliberately deferred to first sign-in, not created here.
+        assert db.query(User).count() == 0
 
 
 def test_signup_surfaces_provider_error_for_duplicate_email():
@@ -147,6 +191,10 @@ def test_full_signin_then_dashboard_then_signout_flow():
     )
     assert signin.status_code == 303
 
+    with OrmSession(client.db_engine) as db:  # type: ignore[attr-defined]
+        user = db.query(User).one()
+        assert user.email == "a@example.com"
+
     dashboard = client.get("/dashboard")
     assert dashboard.status_code == 200
     assert "a@example.com" in dashboard.text
@@ -181,6 +229,22 @@ def test_dashboard_transparently_refreshes_expired_access_token():
     response = client.get("/dashboard")
     assert response.status_code == 200
     assert "a@example.com" in response.text
+
+
+def test_signin_backfills_and_is_idempotent_for_a_pre_existing_auth_account():
+    """A Supabase account that predates this schema (e.g. the real test account
+    created during T-1101's live verification, before the users table existed)
+    must get a users row backfilled on its first sign-in here — and signing in
+    again must not create a second row for the same auth_provider_id (T-1102)."""
+    fake = FakeAuthClient()
+    fake.users["a@example.com"] = ("hunter22", "1")
+    client = _client(fake)
+
+    client.post("/signin", data={"email": "a@example.com", "password": "hunter22"})
+    client.post("/signin", data={"email": "a@example.com", "password": "hunter22"})
+
+    with OrmSession(client.db_engine) as db:  # type: ignore[attr-defined]
+        assert db.query(User).count() == 1
 
 
 def test_dashboard_clears_session_when_refresh_also_fails():

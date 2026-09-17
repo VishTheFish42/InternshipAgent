@@ -92,9 +92,9 @@
 
 | ID | Requirement |
 |---|---|
-| FR-50 | The system SHALL support multiple independent user accounts on one shared deployment, each with fully isolated data: profile, resumes, company watchlist, posting match/notification state, and notification preferences. |
-| FR-51 | Authentication SHALL be handled by a managed third-party auth provider (e.g. Clerk, Auth0, or Supabase Auth) rather than custom-built password/session handling, supporting at minimum email+password and Google OAuth sign-in. |
-| FR-52 | Every user-scoped database table SHALL be keyed by a `user_id` foreign key. No query path SHALL be able to return one user's data to another user. |
+| FR-50 | **Schema implemented** (T-1102): `users`/`resumes`/`user_profile_cache`/`user_companies`/`user_posting_matches` exist, each scoped by `user_id`. No feature yet actually reads/writes the isolated data beyond the bare `users` row itself (resume upload, watchlist, scoring/notification state are T-1103–T-1109) — the system SHALL support multiple independent user accounts on one shared deployment, each with fully isolated data: profile, resumes, company watchlist, posting match/notification state, and notification preferences. |
+| FR-51 | **Partially implemented** (T-1101): Supabase Auth handles email+password sign-up/sign-in. Google OAuth sign-in is not wired up yet. Authentication SHALL be handled by a managed third-party auth provider (e.g. Clerk, Auth0, or Supabase Auth) rather than custom-built password/session handling, supporting at minimum email+password and Google OAuth sign-in. |
+| FR-52 | **Schema implemented** (T-1102): every user-scoped table (`resumes`, `user_profile_cache`, `user_companies`, `user_posting_matches`) carries a `user_id` foreign key. The "no query path can leak another user's data" half needs actual query-scoping enforcement in the features that will query these tables (T-1103+) — only `get_or_create_user`'s lookup exists so far, and it's correctly scoped by `auth_provider_id`. Every user-scoped database table SHALL be keyed by a `user_id` foreign key. No query path SHALL be able to return one user's data to another user. |
 
 ### 1.9 Resume Management — Planned (v2)
 
@@ -109,9 +109,9 @@
 
 | ID | Requirement |
 |---|---|
-| FR-57 | Each user SHALL maintain their own company watchlist through the web app — the per-user equivalent of today's `config/companies.yaml` (FR-07), editable via add/remove in the UI rather than a YAML file. |
-| FR-58 | Every new user account SHALL start with an empty watchlist. No user's personal watchlist (including the developer's own) SHALL be used as a seed or default for any other user's account. |
-| FR-59 | Company → ATS resolution (FR-08, FR-09) SHALL remain a single shared, app-wide cache keyed by normalized company name, reused across every user watching that company — this is impersonal metadata (which ATS a company uses), not personal data, so sharing it introduces no cross-user data leak. |
+| FR-57 | **Schema implemented** (T-1102): `user_companies` (`user_id`, `company_name_raw`, `company_lookup_id`, unique per user+name) exists. No add/remove UI yet (T-1105) — each user SHALL maintain their own company watchlist through the web app, the per-user equivalent of today's `config/companies.yaml` (FR-07), editable via add/remove in the UI rather than a YAML file. |
+| FR-58 | **Schema supports this** (T-1102): `user_companies` starts empty for every user and is never seeded from anywhere. Not independently testable until T-1105 gives users a way to add companies at all — every new user account SHALL start with an empty watchlist, and no user's personal watchlist (including the developer's own) SHALL be used as a seed or default for any other user's account. |
+| FR-59 | **Schema implemented** (T-1102): a fresh `company_lookup` table exists in the same Postgres DB as `user_companies`, in the same shape as the worker's `company_lookup` (§7.2) — but empty; not yet populated or actually shared across any real users (T-1106/T-1107 own the fetch-side wiring that would make this cache meaningfully "shared"). Company → ATS resolution (FR-08, FR-09) SHALL remain a single shared, app-wide cache keyed by normalized company name, reused across every user watching that company — this is impersonal metadata (which ATS a company uses), not personal data, so sharing it introduces no cross-user data leak. |
 
 ### 1.11 Notification Channels — Planned (v2)
 

@@ -858,11 +858,13 @@ Four structural decisions were made explicitly, each with real alternatives cons
 
 Scale target for the initial build: a small beta, dozens of users — not hundreds or thousands. That keeps the scheduler a simple in-process loop over users (§14.6) rather than requiring a distributed job queue; revisit if usage outgrows that.
 
-### 14.2 Accounts & auth
+### 14.2 Accounts & auth — IMPLEMENTED (T-1101)
 
 Auth is handled by a managed provider (e.g. Clerk, Auth0, or Supabase Auth) rather than hand-rolled password/session code — far less security-sensitive surface to own (password hashing, verification emails, reset tokens, session/CSRF handling) for a product at this scale. Minimum supported sign-in: email+password and Google OAuth. The provider issues a stable external user ID that the app's own `users` table stores alongside app-specific state (§14.3).
 
-### 14.3 Data model changes
+### 14.3 Data model changes — IMPLEMENTED (T-1102)
+
+Live-migrated to the Supabase project's Postgres instance (`src/web/db.py`, `alembic_web.ini`/`alembic_web/`) — a deliberately separate `DeclarativeBase` and Alembic environment from `src/db.py`'s worker schema, not sharing state at all. `alembic/env.py` applies `src.db`'s metadata to whatever `DATABASE_URL` it's given; putting these tables on that same `Base` would make `alembic upgrade` try to create both schemas in one database regardless of which config was run. A distinct `version_table` (`alembic_version_web`) means a future move of the worker onto this same Postgres instance (§14.8, T-1110) won't collide with it either. `company_lookup` and `job_postings` exist here too, in the shared-content shape below — empty, not yet populated (that's §14.6/T-1106–T-1107).
 
 The core structural change: **posting content becomes shared/app-wide; scoring and notification state becomes per-user.** Today's single `job_postings` table (§7.1) conflates both — `match_score`, `match_reasoning`, `missing_qualifications`, `notified`, `applied` are all columns on the posting itself, which only works because there's exactly one user. Splitting these apart:
 

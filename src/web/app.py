@@ -8,15 +8,18 @@ Run locally: python -m src.web
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.web.config import get_web_settings
+from src.web.db import get_or_create_user, init_db
 from src.web.supabase_auth import AuthUser, SupabaseAuthClient, SupabaseAuthError
 
 app = FastAPI(title="InternshipAgent")
@@ -25,10 +28,19 @@ _settings = get_web_settings()
 app.add_middleware(SessionMiddleware, secret_key=_settings.session_secret)
 
 _templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+_db_engine = init_db(_settings.supabase_db_url)
 
 
 def get_auth_client() -> SupabaseAuthClient:
     return SupabaseAuthClient(_settings.supabase_url, _settings.supabase_anon_key)
+
+
+def get_db_session() -> Generator[Session, None, None]:
+    session = Session(_db_engine)
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 def get_current_user(
@@ -77,6 +89,7 @@ def signup_form(request: Request) -> Any:
 def signup_submit(
     request: Request,
     auth: Annotated[SupabaseAuthClient, Depends(get_auth_client)],
+    db: Annotated[Session, Depends(get_db_session)],
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     confirm_password: Annotated[str, Form()],
@@ -94,12 +107,17 @@ def signup_submit(
 
     if session is None:
         # Supabase project has "Confirm email" enabled — no session is issued
-        # until the user clicks the link it just emailed them.
+        # until the user clicks the link it just emailed them. The users row
+        # is created on first sign-in instead (get_or_create_user handles
+        # either order — whichever request sees this auth_provider_id first).
         return _templates.TemplateResponse(
             request,
             "signup.html",
             {"success": "Account created — check your email to confirm before signing in."},
         )
+
+    get_or_create_user(db, auth_provider_id=session.user.id, email=session.user.email)
+    db.commit()
 
     request.session["access_token"] = session.access_token
     request.session["refresh_token"] = session.refresh_token
@@ -115,6 +133,7 @@ def signin_form(request: Request) -> Any:
 def signin_submit(
     request: Request,
     auth: Annotated[SupabaseAuthClient, Depends(get_auth_client)],
+    db: Annotated[Session, Depends(get_db_session)],
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
 ) -> Any:
@@ -124,6 +143,12 @@ def signin_submit(
         return _templates.TemplateResponse(
             request, "signin.html", {"error": str(exc), "email": email}
         )
+
+    # Backfills a users row for an account that predates this schema (e.g. a
+    # test account created during T-1101's live verification) — get_or_create_user
+    # is idempotent, so this is a no-op for every subsequent sign-in.
+    get_or_create_user(db, auth_provider_id=session.user.id, email=session.user.email)
+    db.commit()
 
     request.session["access_token"] = session.access_token
     request.session["refresh_token"] = session.refresh_token

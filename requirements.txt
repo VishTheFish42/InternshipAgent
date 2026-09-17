@@ -28,6 +28,7 @@ uvicorn>=0.30.0
 jinja2>=3.1.0                # server-rendered sign-up/sign-in/dashboard pages
 python-multipart>=0.0.9      # required by Starlette to parse HTML form posts
 itsdangerous>=2.2.0          # signs the session cookie (Starlette SessionMiddleware)
+psycopg[binary]>=3.1.0       # Postgres driver for the multi-tenant schema (T-1102)
 
 # ── Config & validation ───────────────────────────────────────────────────────
 pydantic>=2.0.0

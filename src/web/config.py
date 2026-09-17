@@ -26,6 +26,14 @@ class WebSettings(BaseSettings):
     supabase_url: str
     supabase_anon_key: str
 
+    # Direct Postgres connection string for the multi-tenant schema (T-1102,
+    # src/web/db.py) — Settings → Database → Connection string in the Supabase
+    # dashboard. Distinct from supabase_url above (that's the GoTrue auth API,
+    # this is the database itself). Requires the psycopg driver in the URL
+    # scheme: postgresql+psycopg://... (Supabase's dashboard gives you a plain
+    # postgresql://... string — insert +psycopg after postgresql yourself).
+    supabase_db_url: str
+
     # Signs the session cookie (Starlette SessionMiddleware) — generate with
     # `python -c "import secrets; print(secrets.token_hex(32))"`. Rotating this
     # invalidates every existing session.
@@ -42,6 +50,6 @@ def get_web_settings() -> WebSettings:
             raise SystemExit(
                 f"Missing required environment variables: {', '.join(missing)}\n"
                 "Copy .env.example to .env and fill in the missing values "
-                "(SUPABASE_URL, SUPABASE_ANON_KEY, SESSION_SECRET)."
+                "(SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_DB_URL, SESSION_SECRET)."
             ) from exc
         raise

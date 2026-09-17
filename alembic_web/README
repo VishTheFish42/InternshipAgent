@@ -1,0 +1,4 @@
+Migrations for the multi-tenant web app's schema (src/web/db.py), against the
+Supabase project's Postgres instance. Separate from ../alembic/, which manages
+the existing single-user worker's SQLite schema (src/db.py) — see
+docs/design.md §14.3 for why. Run with: alembic -c alembic_web.ini <command>
