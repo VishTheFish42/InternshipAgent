@@ -344,7 +344,9 @@ def process_telegram_updates(session: Session, settings: Settings) -> None:
     offset = state.last_update_id + 1 if state.last_update_id is not None else None
     updates = get_updates(bot_token, offset=offset)
 
-    max_update_id = state.last_update_id
+    # Taken from this batch alone, not compared with the stored cursor, which
+    # may belong to a previous bot token (see update_last_telegram_update_id).
+    max_update_id: int | None = None
     for update in updates:
         update_id = update.get("update_id")
         if update_id is not None and (max_update_id is None or update_id > max_update_id):

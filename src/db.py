@@ -369,12 +369,15 @@ def set_notifications_paused(session: Session, paused: bool) -> BotState:
 
 
 def update_last_telegram_update_id(session: Session, update_id: int) -> BotState:
-    """Advance the getUpdates polling cursor so already-processed updates
-    aren't redelivered on the next poll."""
+    """Move the getUpdates polling cursor so already-processed updates aren't
+    redelivered on the next poll.
+
+    This can legitimately move backward: update_ids are per bot, so after
+    switching to a new bot token they can be lower than the stored cursor.
+    Keeping the higher value would redeliver the same updates on every poll."""
     state = get_bot_state(session)
-    if state.last_update_id is None or update_id > state.last_update_id:
-        state.last_update_id = update_id
-        session.flush()
+    state.last_update_id = update_id
+    session.flush()
     return state
 
 

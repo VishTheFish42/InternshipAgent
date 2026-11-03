@@ -1175,6 +1175,32 @@ def test_process_telegram_updates_passes_offset_from_stored_cursor(engine: Engin
     assert mock_get_updates.call_args.kwargs["offset"] == 701
 
 
+def test_process_telegram_updates_does_not_replay_after_switching_to_new_bot(
+    engine: Engine,
+) -> None:
+    """A new bot's update_ids can be lower than the old bot's stored cursor. The
+    cursor must follow them, or the same command is handled again on every poll."""
+    with session_scope(engine) as session:
+        update_last_telegram_update_id(session, 306704384)
+
+    update = {"update_id": 50, "message": {"text": "/resume", "chat": {"id": 123456789}}}
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[update]),
+        patch("src.main.send_message_with_retry"),
+    ):
+        process_telegram_updates(session, _settings())
+
+    with (
+        session_scope(engine) as session,
+        patch("src.main.get_updates", return_value=[]) as mock_get_updates,
+    ):
+        process_telegram_updates(session, _settings())
+
+    assert mock_get_updates.call_args.kwargs["offset"] == 51
+
+
 # ── _SecretRedactingFilter ───────────────────────────────────────────────────
 
 

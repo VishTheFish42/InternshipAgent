@@ -665,10 +665,10 @@ def test_update_last_telegram_update_id_advances_cursor(engine: Engine) -> None:
         assert get_bot_state(s).last_update_id == 100
 
 
-def test_update_last_telegram_update_id_never_moves_backward(engine: Engine) -> None:
+def test_update_last_telegram_update_id_can_move_backward_for_a_new_bot(engine: Engine) -> None:
     with session_scope(engine) as s:
         update_last_telegram_update_id(s, 100)
     with session_scope(engine) as s:
         update_last_telegram_update_id(s, 50)
     with session_scope(engine) as s:
-        assert get_bot_state(s).last_update_id == 100
+        assert get_bot_state(s).last_update_id == 50
