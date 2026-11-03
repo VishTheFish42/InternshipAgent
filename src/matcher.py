@@ -72,6 +72,8 @@ class ScoringResult:
     input_tokens: int
     output_tokens: int
     estimated_cost_usd: float
+    batches_attempted: int = 0
+    batches_failed: int = 0
 
 
 # ── Profile rendering ─────────────────────────────────────────────────────────
@@ -214,14 +216,18 @@ def score_postings(
     all_scored: list[ScoredPosting] = []
     total_input = 0
     total_output = 0
+    batches_attempted = 0
+    batches_failed = 0
 
     for batch in _batches(postings):
+        batches_attempted += 1
         try:
             scored, input_tokens, output_tokens = _call_claude_batch(
                 client, system_prompt, batch, model
             )
         except Exception as exc:
             _log.warning("Skipping batch of %d postings — scoring failed: %s", len(batch), exc)
+            batches_failed += 1
             continue
         all_scored.extend(scored)
         total_input += input_tokens
@@ -232,4 +238,6 @@ def score_postings(
         input_tokens=total_input,
         output_tokens=total_output,
         estimated_cost_usd=_estimate_cost(model, total_input, total_output),
+        batches_attempted=batches_attempted,
+        batches_failed=batches_failed,
     )

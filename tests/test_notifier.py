@@ -11,8 +11,9 @@ from src.notifier import (
     _redact_chat_id,
     answer_callback_query,
     applied_button,
+    bot_token_is_rejected,
     edit_message_mark_applied,
-    format_burst_message,
+    format_burst_messages,
     format_individual_message,
     get_updates,
     notify_matches,
@@ -219,58 +220,77 @@ def test_friendly_source_handles_empty_string():
 
 def test_format_burst_message_includes_count_and_ranks_by_score():
     matches = [_match(company="Zeta", score=50), _match(company="Omega", score=90)]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert "2 new postings" in body
     assert body.index("Omega") < body.index("Zeta")
 
 
 def test_format_burst_message_singular_for_one_posting():
-    body = format_burst_message([_match(company="Stripe")])
+    body = format_burst_messages([_match(company="Stripe")])[0].body
     assert "1 new posting this cycle" in body
 
 
 def test_format_burst_message_includes_missing_qualifications_per_item():
     matches = [_match(company="Acme", missing=["Kubernetes", "GraphQL"])]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert "Missing: Kubernetes, GraphQL" in body
 
 
 def test_format_burst_message_handles_empty_missing_list():
     matches = [_match(company="Acme", missing=[])]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert "Missing: none listed" in body
 
 
 def test_format_burst_message_includes_apply_link_per_item():
     matches = [_match(company="Stripe")]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert 'href="https://boards.greenhouse.io/stripe/jobs/123456"' in body
 
 
 def test_format_burst_message_includes_source_when_given():
     matches = [_match(company="Stripe", source="jsearch:LinkedIn")]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert "🔗LinkedIn" in body
 
 
 def test_format_burst_message_omits_source_when_empty():
     matches = [_match(company="Stripe", source="")]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert "🔗" not in body
 
 
-def test_format_burst_message_caps_at_ten_lines_with_overflow_note():
-    matches = [_match(company=f"Company{i}", score=i) for i in range(15)]
-    body = format_burst_message(matches)
-    for i in range(1, 11):
-        assert f"<b>{i}. " in body
-    assert "+ 5 more" in body
-    assert "<code>db stats</code>" in body
+def test_format_burst_messages_lists_every_posting_across_parts():
+    matches = [_match(company=f"Company{i}", score=100 - i) for i in range(25)]
+    parts = format_burst_messages(matches)
+    assert len(parts) == 3
+    assert [len(p.matches) for p in parts] == [10, 10, 5]
+    assert "25 new postings this cycle</b> (part 2 of 3)" in parts[1].body
+    combined = "\n".join(p.body for p in parts)
+    for i in range(1, 26):
+        assert f"<b>{i}. Company{i - 1}</b>" in combined
+
+
+def test_format_burst_messages_splits_on_message_length():
+    long_url = "https://example.com/" + "x" * 1000
+    matches = [_match(company=f"C{i}") for i in range(10)]
+    for m in matches:
+        m.apply_url = long_url
+    parts = format_burst_messages(matches)
+    assert len(parts) > 1
+    assert all(len(p.body) <= 4096 for p in parts)
+    assert sum(len(p.matches) for p in parts) == 10
+
+
+def test_format_burst_messages_single_part_has_no_part_label():
+    parts = format_burst_messages([_match(company=f"C{i}") for i in range(10)])
+    assert len(parts) == 1
+    assert "part" not in parts[0].body
 
 
 def test_format_burst_message_no_overflow_note_when_under_cap():
     matches = [_match(company="A"), _match(company="B")]
-    body = format_burst_message(matches)
+    body = format_burst_messages(matches)[0].body
     assert "more" not in body
 
 
@@ -537,3 +557,71 @@ def test_edit_message_mark_applied_logs_but_does_not_raise_on_api_error(caplog):
         edit_message_mark_applied("bot-token", "12345", "999", "original text")
 
     assert "message is not modified" in caplog.text
+
+
+def test_notify_matches_burst_sends_every_part_paced():
+    matches = [_match(company=f"C{i}") for i in range(25)]
+
+    with (
+        patch("src.notifier.httpx.post", return_value=_ok_response()) as mock_post,
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        results = notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    assert len(results) == 3
+    assert mock_post.call_count == 3
+    assert mock_sleep.call_count == 2
+    mock_sleep.assert_called_with(1.0)
+
+
+def test_notify_matches_burst_waits_out_retry_delay_only_once():
+    matches = [_match(company=f"C{i}") for i in range(25)]
+    rejected = MagicMock()
+    rejected.json.return_value = {"ok": False, "description": "Unauthorized"}
+
+    with (
+        patch("src.notifier.httpx.post", return_value=rejected) as mock_post,
+        patch("src.notifier.time.sleep") as mock_sleep,
+    ):
+        results = notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    assert [r.success for r in results] == [False, False, False]
+    assert mock_post.call_count == 4  # first part twice, then one try each
+    delays = [c.args[0] for c in mock_sleep.call_args_list]
+    assert delays.count(300) == 1
+
+
+def test_notify_matches_burst_failed_part_does_not_block_later_parts():
+    matches = [_match(company=f"C{i}") for i in range(25)]
+    rejected = MagicMock()
+    rejected.json.return_value = {"ok": False, "description": "Bad Request"}
+
+    with (
+        patch(
+            "src.notifier.httpx.post",
+            side_effect=[rejected, rejected, _ok_response(), _ok_response()],
+        ),
+        patch("src.notifier.time.sleep"),
+    ):
+        results = notify_matches("bot-token", matches, chat_id="12345", burst_threshold=5)
+
+    assert [r.success for r in results] == [False, True, True]
+
+
+def test_bot_token_is_rejected_when_telegram_says_so():
+    rejected = MagicMock()
+    rejected.json.return_value = {"ok": False, "description": "Unauthorized"}
+    with patch("src.notifier.httpx.get", return_value=rejected):
+        assert bot_token_is_rejected("bad-token") is True
+
+
+def test_bot_token_is_not_rejected_when_valid():
+    accepted = MagicMock()
+    accepted.json.return_value = {"ok": True, "result": {"id": 1}}
+    with patch("src.notifier.httpx.get", return_value=accepted):
+        assert bot_token_is_rejected("good-token") is False
+
+
+def test_bot_token_is_not_rejected_on_network_error():
+    with patch("src.notifier.httpx.get", side_effect=RuntimeError("no route")):
+        assert bot_token_is_rejected("any-token") is False

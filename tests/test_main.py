@@ -25,12 +25,14 @@ from src.db import (
     upsert_posting,
 )
 from src.main import (
+    _cycle_is_healthy,
     _dedupe_and_store,
     _fetch_all_postings,
     _load_company_names,
     _load_priority_company_names,
     _load_yaml_config,
     _notify_and_mark,
+    _ping_healthcheck,
     _score_and_record,
     _SecretRedactingFilter,
     _to_match_info,
@@ -379,6 +381,31 @@ def test_notify_and_mark_individual_mode_marks_each_posting(engine: Engine) -> N
         rows = {r.external_id: r for r in session.query(JobPosting).all()}
         assert rows["1"].notified is True
         assert rows["2"].notified is True
+
+
+def test_notify_and_mark_burst_marks_only_postings_in_delivered_parts(engine: Engine) -> None:
+    with session_scope(engine) as session:
+        postings = [
+            _stored_posting(
+                session,
+                external_id=str(i),
+                apply_url=f"https://boards.greenhouse.io/stripe/jobs/{i}",
+                match_score=100 - i,
+            )
+            for i in range(25)
+        ]
+        ok = SendResult(success=True, message_id=999, error=None)
+        failed = SendResult(success=False, message_id=None, error="failed")
+
+        with patch("src.main.notify_matches", return_value=[ok, failed, ok]):
+            count = _notify_and_mark(session, postings, _settings(burst_threshold=5))
+
+    assert count == 15
+    with session_scope(engine) as session:
+        rows = {r.match_score: r.notified for r in session.query(JobPosting).all()}
+    assert all(rows[100 - i] for i in range(10))  # part 1
+    assert not any(rows[100 - i] for i in range(10, 20))  # part 2 retries next cycle
+    assert all(rows[100 - i] for i in range(20, 25))  # part 3
 
 
 def test_notify_and_mark_burst_mode_marks_all_from_single_result(engine: Engine) -> None:
@@ -1178,11 +1205,11 @@ def test_secret_redacting_filter_masks_serpapi_key_in_query_string() -> None:
 
 def test_secret_redacting_filter_masks_telegram_bot_token_in_path() -> None:
     record = _record(
-        "https://api.telegram.org/bot8941137659:AAGxCiKRF17VncNKhknsqYiWMyW5beDouj0/getUpdates"
+        "https://api.telegram.org/bot123456789:FAKE-TEST-TOKEN_not-a-real-credential/getUpdates"
     )
     _SecretRedactingFilter().filter(record)
     message = record.getMessage()
-    assert "AAGxCiKRF17VncNKhknsqYiWMyW5beDouj0" not in message
+    assert "FAKE-TEST-TOKEN_not-a-real-credential" not in message
     assert "/bot***/getUpdates" in message
 
 
@@ -1190,3 +1217,128 @@ def test_secret_redacting_filter_leaves_non_secret_urls_unchanged() -> None:
     record = _record("https://remoteok.com/api")
     _SecretRedactingFilter().filter(record)
     assert "https://remoteok.com/api" in record.getMessage()
+
+
+# ── Backlog freshness ─────────────────────────────────────────────────────────
+
+
+def _run_cycle_with_backlog(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scored_result: ScoringResult
+) -> tuple[dict, MagicMock, MagicMock]:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "profile.yaml").write_text(
+        "matching:\n  min_relevance_score: 0\n  max_posting_age_days: 7\n", encoding="utf-8"
+    )
+    with (
+        session_scope(engine) as session,
+        patch("src.main._SOURCES", [("greenhouse", MagicMock(return_value=[]))]),
+        patch("src.main.score_postings", return_value=scored_result) as mock_score,
+        patch(
+            "src.main.notify_matches",
+            side_effect=lambda _token, matches, **_: [
+                SendResult(success=True, message_id=1, error=None) for _ in matches
+            ],
+        ) as mock_notify,
+    ):
+        summary = run_cycle(session, _settings())
+    return summary, mock_score, mock_notify
+
+
+def _empty_score(**overrides: object) -> ScoringResult:
+    base: dict = {"scored": [], "input_tokens": 0, "output_tokens": 0, "estimated_cost_usd": 0.0}
+    base.update(overrides)
+    return ScoringResult(**base)
+
+
+def test_run_cycle_does_not_score_stale_backlog(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = _now() - timedelta(days=30)
+    with session_scope(engine) as session:
+        fresh = _stored_posting(session, external_id="fresh", apply_url="https://x.test/fresh")
+        fresh_id = fresh.id
+        _stored_posting(session, external_id="old", apply_url="https://x.test/old", posted_at=old)
+        no_date = _stored_posting(session, external_id="nd", apply_url="https://x.test/nd")
+        no_date.found_at = old  # no posted_at: age falls back to when it was first seen
+
+    _, mock_score, _ = _run_cycle_with_backlog(engine, tmp_path, monkeypatch, _empty_score())
+
+    scored_ids = [p.external_id for p in mock_score.call_args.args[0]]
+    assert scored_ids == [str(fresh_id)]
+
+
+def test_run_cycle_does_not_alert_on_stale_scored_postings(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with session_scope(engine) as session:
+        fresh = _stored_posting(session, external_id="fresh", apply_url="https://x.test/fresh")
+        record_score(session, fresh.id, 80, "ok", "h")
+        stale = _stored_posting(
+            session,
+            external_id="old",
+            apply_url="https://x.test/old",
+            posted_at=_now() - timedelta(days=30),
+        )
+        record_score(session, stale.id, 80, "ok", "h")
+
+    _, _, mock_notify = _run_cycle_with_backlog(engine, tmp_path, monkeypatch, _empty_score())
+
+    alerted = [m.apply_url for m in mock_notify.call_args.args[1]]
+    assert alerted == ["https://x.test/fresh"]
+
+
+# ── Health ping ───────────────────────────────────────────────────────────────
+
+
+def test_run_cycle_flags_scoring_failure_only_when_every_batch_failed(
+    engine: Engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Scoring is skipped entirely when nothing needs it, so give it a posting.
+    with session_scope(engine) as session:
+        _stored_posting(session, external_id="unscored", apply_url="https://x.test/unscored")
+
+    summary, _, _ = _run_cycle_with_backlog(
+        engine, tmp_path, monkeypatch, _empty_score(batches_attempted=3, batches_failed=3)
+    )
+    assert summary["all_scoring_failed"] is True
+
+    summary, _, _ = _run_cycle_with_backlog(
+        engine, tmp_path, monkeypatch, _empty_score(batches_attempted=3, batches_failed=1)
+    )
+    assert summary["all_scoring_failed"] is False
+
+
+@pytest.mark.parametrize("key", ["all_sources_failed", "all_scoring_failed", "all_alerts_failed"])
+def test_cycle_is_unhealthy_on_total_stage_failure(key: str) -> None:
+    with patch("src.main.bot_token_is_rejected", return_value=False):
+        assert _cycle_is_healthy({key: True}, _settings()) is False
+
+
+def test_cycle_is_unhealthy_when_token_rejected_even_if_quiet() -> None:
+    with patch("src.main.bot_token_is_rejected", return_value=True):
+        assert _cycle_is_healthy({}, _settings()) is False
+
+
+def test_cycle_is_healthy_when_quiet_and_token_valid() -> None:
+    with patch("src.main.bot_token_is_rejected", return_value=False):
+        assert _cycle_is_healthy({"all_scoring_failed": False}, _settings()) is True
+
+
+def test_ping_healthcheck_swallows_errors_without_logging_the_url(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    url = "https://hc-ping.com/secret-uuid"
+    with (
+        patch("src.main.httpx.get", side_effect=RuntimeError(f"failed: {url}")),
+        caplog.at_level(logging.WARNING),
+    ):
+        _ping_healthcheck(url)
+    assert "secret-uuid" not in caplog.text
+
+
+def test_secret_redacting_filter_masks_healthcheck_url() -> None:
+    record = logging.LogRecord(
+        "httpx", logging.INFO, "", 0, "GET %s", ("https://hc-ping.com/abc-123",), None
+    )
+    _SecretRedactingFilter().filter(record)
+    assert "abc-123" not in record.getMessage()

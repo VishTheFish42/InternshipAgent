@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Notifications
     burst_threshold: int = 20
 
+    # Dead-man's-switch ping URL (e.g. Healthchecks.io); hit after each healthy cycle
+    healthcheck_url: str | None = None
+
     # Claude models
     claude_scoring_model: str = "claude-haiku-4-5-20251001"
     claude_extraction_model: str = "claude-sonnet-4-6"

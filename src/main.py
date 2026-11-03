@@ -15,6 +15,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+import httpx
 import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -44,8 +45,9 @@ from src.matcher import ScoringResult, hash_profile, score_postings
 from src.notifier import (
     MatchInfo,
     answer_callback_query,
+    bot_token_is_rejected,
     edit_message_mark_applied,
-    format_burst_message,
+    format_burst_messages,
     format_individual_message,
     get_updates,
     notify_matches,
@@ -169,6 +171,13 @@ def _is_fresh(posted_at: datetime | None, max_age_days: int) -> bool:
     return posted_at >= _now() - timedelta(days=max_age_days)
 
 
+def _still_fresh(posting: JobPosting, max_age_days: int) -> bool:
+    """_is_fresh() for a stored posting. Falls back to found_at because many
+    sources give no posted_at, and without it a posting would stay "fresh"
+    forever, however long an outage kept it waiting."""
+    return _is_fresh(posting.posted_at or posting.found_at, max_age_days)
+
+
 def _dedupe_and_store(
     session: Session, raw_postings: list[RawPosting], max_posting_age_days: int
 ) -> int:
@@ -284,12 +293,14 @@ def _notify_and_mark(session: Session, matches: list[JobPosting], settings: Sett
     alerts_sent = 0
     is_burst = len(matches) >= settings.burst_threshold
     if is_burst:
-        result = results[0]
-        if result.success:
-            body = format_burst_message(match_infos)
-            for posting in matches:
-                mark_notified(session, posting.id, chat_id, body, str(result.message_id))
-                alerts_sent += 1
+        parts = format_burst_messages(match_infos)
+        for part, result in zip(parts, results, strict=True):
+            if result.success:
+                for info in part.matches:
+                    mark_notified(
+                        session, info.posting_id, chat_id, part.body, str(result.message_id)
+                    )
+                    alerts_sent += 1
     else:
         for posting, info, result in zip(matches, match_infos, results, strict=True):
             if result.success:
@@ -418,12 +429,27 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
     if profile_changed:
         merged = {p.id: p for p in [*to_score, *get_unnotified_postings(session)]}
         to_score = list(merged.values())
+    # Re-checked here, not just on insert: postings wait in the DB through an
+    # outage, and scoring a stale backlog spends credits on dead listings.
+    fresh_to_score = [p for p in to_score if _still_fresh(p, max_posting_age_days)]
+    if len(fresh_to_score) < len(to_score):
+        _log.info(
+            "Skipping %d posting(s) older than %d days",
+            len(to_score) - len(fresh_to_score),
+            max_posting_age_days,
+        )
+    to_score = fresh_to_score
 
     scoring_result = _score_and_record(
         session, to_score, profile, preferences, profile_hash, settings
     )
 
-    matches = get_unnotified_scored_postings(session, min_relevance_score)
+    matches = [
+        p
+        for p in get_unnotified_scored_postings(session, min_relevance_score)
+        if _still_fresh(p, max_posting_age_days)
+    ]
+    alerts_attempted = False
     if dry_run:
         _log.info("[dry-run] Would send alerts for %d posting(s)", len(matches))
         alerts_sent = 0
@@ -435,6 +461,7 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
         alerts_sent = 0
     else:
         alerts_sent = _notify_and_mark(session, matches, settings)
+        alerts_attempted = bool(matches)
 
     run_data = {
         "started_at": started_at,
@@ -449,7 +476,44 @@ def run_cycle(session: Session, settings: Settings, *, dry_run: bool = False) ->
         "estimated_cost_usd": scoring_result.estimated_cost_usd,
     }
     log_run(session, run_data)
-    return run_data
+    # Not RunLog columns, so added only after log_run. Each flags a total
+    # failure of that stage, not a partial one: one unparseable batch or
+    # undeliverable message is logged but isn't an outage worth an email.
+    return {
+        **run_data,
+        "all_sources_failed": bool(errors) and not sources_polled,
+        "all_scoring_failed": (
+            scoring_result.batches_attempted > 0
+            and scoring_result.batches_failed == scoring_result.batches_attempted
+        ),
+        "all_alerts_failed": alerts_attempted and alerts_sent == 0,
+    }
+
+
+def _cycle_is_healthy(summary: dict[str, Any], settings: Settings) -> bool:
+    """Whether a finished cycle may report in to the dead-man's switch. run_cycle
+    swallows source, scoring, and send failures so one bad dependency can't stop
+    the rest, so "it returned" says nothing. The token is checked directly
+    because a quiet cycle sends no alerts and wouldn't otherwise notice a dead one."""
+    problems = [
+        key
+        for key in ("all_sources_failed", "all_scoring_failed", "all_alerts_failed")
+        if summary.get(key)
+    ]
+    if settings.telegram_bot_token and bot_token_is_rejected(settings.telegram_bot_token):
+        problems.append("telegram_token_rejected")
+    if problems:
+        _log.warning("Cycle unhealthy, skipping health ping: %s", ", ".join(problems))
+    return not problems
+
+
+def _ping_healthcheck(url: str) -> None:
+    """Never raises: a monitoring hiccup must not fail a cycle that succeeded."""
+    try:
+        httpx.get(url, timeout=10.0).raise_for_status()
+    except Exception as exc:
+        # str(exc) can contain the URL, which is a credential of sorts.
+        _log.warning("Health ping failed: %s", type(exc).__name__)
 
 
 def retry_unresolved_companies(session: Session, settings: Settings) -> None:
@@ -656,6 +720,7 @@ class _SecretRedactingFilter(logging.Filter):
     _PATTERNS = [
         (re.compile(r"(api_key=)[^&\s\"]+"), r"\1***"),
         (re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+"), r"\1***"),
+        (re.compile(r"(hc-ping\.com/)[A-Za-z0-9_/-]+"), r"\1***"),
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -722,7 +787,10 @@ def main() -> None:
 
     def _scheduled_cycle() -> None:
         with session_scope(engine) as session:
-            run_cycle(session, settings, dry_run=args.dry_run)
+            summary = run_cycle(session, settings, dry_run=args.dry_run)
+        # After the session closes, so a failed commit means no ping.
+        if settings.healthcheck_url and not args.dry_run and _cycle_is_healthy(summary, settings):
+            _ping_healthcheck(settings.healthcheck_url)
 
     def _scheduled_company_retry() -> None:
         with session_scope(engine) as session:

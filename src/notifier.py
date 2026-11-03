@@ -26,7 +26,8 @@ import httpx
 _log = logging.getLogger(__name__)
 
 _MAX_MESSAGE_CHARS = 4096  # Telegram's hard per-message limit
-_BURST_MAX_LINES = 10
+_BURST_MAX_LINES = 10  # postings per burst message, not a cap on the total
+_BURST_HEADER_RESERVE_CHARS = 100
 _RETRY_DELAY_SECONDS = 300
 _INDIVIDUAL_SEND_DELAY_SECONDS = 1.0  # Telegram's documented per-chat rate limit is ~1 msg/sec
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
@@ -150,31 +151,58 @@ def format_individual_message(
     return f"{prefix}{reasoning_escaped}{suffix}"
 
 
-def format_burst_message(matches: list[MatchInfo]) -> str:
-    """Format a batched summary message (Telegram HTML) for a cycle with many
-    scored postings at once — every posting is listed, ranked highest score
-    first, using the same visual language as the individual format."""
+@dataclass
+class BurstPart:
+    """One Telegram message of a burst, and exactly the postings it lists — so
+    a posting is only marked notified if the message listing it was delivered."""
+
+    matches: list[MatchInfo]
+    body: str
+
+
+def _format_burst_entry(rank: int, m: MatchInfo) -> str:
+    loc = f" · 📍{html.escape(m.location)}" if m.location else ""
+    src = f" · 🔗{html.escape(_friendly_source(m.source))}" if m.source else ""
+    missing = ", ".join(m.missing_qualifications) if m.missing_qualifications else "none listed"
+    apply_link = f'<a href="{html.escape(m.apply_url, quote=True)}">Apply</a>'
+    return (
+        f"{_score_emoji(m.score)} <b>{rank}. {html.escape(m.company)}</b> — "
+        f"{html.escape(m.title)}{loc}{src} ({m.score})\n"
+        f"    Missing: {html.escape(missing)} · {apply_link}"
+    )
+
+
+def format_burst_messages(matches: list[MatchInfo]) -> list[BurstPart]:
+    """Format a cycle's many scored postings (Telegram HTML) as one or more
+    messages, ranked highest score first, numbered continuously across parts.
+
+    Every posting is listed in some part. This used to list only the top
+    _BURST_MAX_LINES while the caller marked all of them notified, so the rest
+    were silently never seen. Parts split at _BURST_MAX_LINES postings or the
+    character limit, whichever comes first. The limit is measured on the raw
+    HTML, which overestimates what Telegram counts, so it errs on the safe side."""
     ranked = sorted(matches, key=lambda m: m.score, reverse=True)
-    n = len(ranked)
-    lines = [f"<b>{n} new posting{'s' if n != 1 else ''} this cycle</b>"]
+    total = len(ranked)
+    budget = _MAX_MESSAGE_CHARS - _BURST_HEADER_RESERVE_CHARS
 
-    shown = ranked[:_BURST_MAX_LINES]
-    for i, m in enumerate(shown, start=1):
-        loc = f" · 📍{html.escape(m.location)}" if m.location else ""
-        src = f" · 🔗{html.escape(_friendly_source(m.source))}" if m.source else ""
-        missing = ", ".join(m.missing_qualifications) if m.missing_qualifications else "none listed"
-        apply_link = f'<a href="{html.escape(m.apply_url, quote=True)}">Apply</a>'
-        lines.append(
-            f"{_score_emoji(m.score)} <b>{i}. {html.escape(m.company)}</b> — "
-            f"{html.escape(m.title)}{loc}{src} ({m.score})"
-        )
-        lines.append(f"    Missing: {html.escape(missing)} · {apply_link}")
+    chunks: list[list[tuple[MatchInfo, str]]] = []
+    used = 0
+    for rank, m in enumerate(ranked, start=1):
+        entry = _format_burst_entry(rank, m)
+        cost = len(entry) + 1  # +1 for the joining newline
+        if not chunks or len(chunks[-1]) >= _BURST_MAX_LINES or used + cost > budget:
+            chunks.append([])
+            used = 0
+        chunks[-1].append((m, entry))
+        used += cost
 
-    remaining = n - len(shown)
-    if remaining > 0:
-        lines.append(f"\n+ {remaining} more — run <code>db stats</code> to see all")
-
-    return "\n".join(lines)
+    title = f"<b>{total} new posting{'s' if total != 1 else ''} this cycle</b>"
+    parts = []
+    for i, chunk in enumerate(chunks, start=1):
+        header = f"{title} (part {i} of {len(chunks)})" if len(chunks) > 1 else title
+        body = "\n".join([header, *(entry for _, entry in chunk)])
+        parts.append(BurstPart(matches=[m for m, _ in chunk], body=body))
+    return parts
 
 
 def applied_button(posting_id: int) -> dict[str, Any]:
@@ -257,6 +285,17 @@ def send_message_with_retry(
             retry_result.error,
         )
     return retry_result
+
+
+def bot_token_is_rejected(bot_token: str) -> bool:
+    """True only if Telegram itself says the token is bad. A network error
+    proves nothing about the token, so it isn't treated as a rejection."""
+    try:
+        resp = httpx.get(_API_BASE.format(token=bot_token, method="getMe"), timeout=10.0)
+        return not resp.json().get("ok")
+    except Exception as exc:
+        _log.warning("Telegram getMe check failed: %s", exc)
+        return False
 
 
 # ── Inbound updates ───────────────────────────────────────────────────────────
@@ -346,6 +385,23 @@ def edit_message_mark_applied(
 # ── Public entrypoint ─────────────────────────────────────────────────────────
 
 
+def _send_burst_parts(bot_token: str, chat_id: str, parts: list[BurstPart]) -> list[SendResult]:
+    """Send every part. Only the first failure waits out the retry delay: a
+    backlog can be dozens of parts, and a dead token would otherwise block the
+    cycle for hours. Later parts are still attempted, once each, so one
+    undeliverable part can't hold back the postings after it forever."""
+    results: list[SendResult] = []
+    retry_allowed = True
+    for i, part in enumerate(parts):
+        if i > 0:
+            time.sleep(_INDIVIDUAL_SEND_DELAY_SECONDS)
+        send = send_message_with_retry if retry_allowed else send_message
+        result = send(bot_token, chat_id, part.body, parse_mode="HTML")
+        retry_allowed = retry_allowed and result.success
+        results.append(result)
+    return results
+
+
 def notify_matches(
     bot_token: str,
     matches: list[MatchInfo],
@@ -355,15 +411,15 @@ def notify_matches(
 ) -> list[SendResult]:
     """
     Route matches to individual or burst mode based on burst_threshold, and send.
-    Returns one SendResult per message actually sent (one for burst mode).
-    Individual sends are paced to respect Telegram's per-chat rate limit.
+    Returns one SendResult per message: per posting in individual mode, per
+    format_burst_messages() part in burst mode, in that same order. Sends are
+    paced to respect Telegram's per-chat rate limit.
     """
     if not matches:
         return []
 
     if len(matches) >= burst_threshold:
-        body = format_burst_message(matches)
-        return [send_message_with_retry(bot_token, chat_id, body, parse_mode="HTML")]
+        return _send_burst_parts(bot_token, chat_id, format_burst_messages(matches))
 
     results = []
     for i, m in enumerate(matches):

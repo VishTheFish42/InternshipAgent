@@ -327,6 +327,8 @@ def test_score_postings_skips_failing_batch_and_continues():
     assert {s.external_id for s in result.scored} == {"10"}
     assert result.input_tokens == 50
     assert result.output_tokens == 5
+    assert result.batches_attempted == 2
+    assert result.batches_failed == 1
 
 
 def test_score_postings_skips_batch_with_unparseable_response():
